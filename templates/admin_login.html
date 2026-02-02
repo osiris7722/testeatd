@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login - Área Administrativa</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/admin.css') }}">
+</head>
+<body>
+    <div class="login-container">
+        <div class="login-box">
+            <h1>🔒 Área Administrativa</h1>
+            <p class="subtitle">Faça login para acessar o painel</p>
+            
+            <form method="POST" action="{{ url_for('admin_login') }}">
+                <div class="form-group">
+                    <label for="password">Senha:</label>
+                    <input 
+                        type="password" 
+                        id="password" 
+                        name="password" 
+                        required 
+                        autofocus
+                        placeholder="Digite a senha"
+                    >
+                </div>
+                
+                {% if error %}
+                <div class="error-message">
+                    {{ error }}
+                </div>
+                {% endif %}
+                
+                <button type="submit" class="login-btn">Entrar</button>
+            </form>
+            
+            <div class="back-link">
+                <a href="{{ url_for('index') }}">← Voltar para a página inicial</a>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

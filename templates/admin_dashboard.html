@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard Administrativo</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/admin.css') }}">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body class="dashboard-body">
+    <div class="dashboard-container">
+        <header class="dashboard-header">
+            <h1>📊 Dashboard Administrativo</h1>
+            <a href="{{ url_for('admin_logout') }}" class="logout-btn">Sair</a>
+        </header>
+        
+        <div class="dashboard-content">
+            <!-- Estatísticas Gerais -->
+            <section class="stats-section">
+                <h2>Estatísticas Gerais</h2>
+                <div class="stats-grid">
+                    <div class="stat-card green">
+                        <div class="stat-icon">😊</div>
+                        <div class="stat-info">
+                            <h3>Muito Satisfeito</h3>
+                            <p class="stat-number" id="total-muito-satisfeito">0</p>
+                            <p class="stat-percent" id="percent-muito-satisfeito">0%</p>
+                        </div>
+                    </div>
+                    
+                    <div class="stat-card blue">
+                        <div class="stat-icon">🙂</div>
+                        <div class="stat-info">
+                            <h3>Satisfeito</h3>
+                            <p class="stat-number" id="total-satisfeito">0</p>
+                            <p class="stat-percent" id="percent-satisfeito">0%</p>
+                        </div>
+                    </div>
+                    
+                    <div class="stat-card red">
+                        <div class="stat-icon">😞</div>
+                        <div class="stat-info">
+                            <h3>Insatisfeito</h3>
+                            <p class="stat-number" id="total-insatisfeito">0</p>
+                            <p class="stat-percent" id="percent-insatisfeito">0%</p>
+                        </div>
+                    </div>
+                    
+                    <div class="stat-card purple">
+                        <div class="stat-icon">📈</div>
+                        <div class="stat-info">
+                            <h3>Total Geral</h3>
+                            <p class="stat-number" id="total-geral">0</p>
+                            <p class="stat-percent">feedbacks</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+            
+            <!-- Gráficos -->
+            <section class="charts-section">
+                <h2>Visualização de Dados</h2>
+                <div class="charts-grid">
+                    <div class="chart-container">
+                        <h3>Gráfico de Barras</h3>
+                        <canvas id="barChart"></canvas>
+                    </div>
+                    <div class="chart-container">
+                        <h3>Gráfico Circular</h3>
+                        <canvas id="pieChart"></canvas>
+                    </div>
+                </div>
+            </section>
+            
+            <!-- Análise Temporal -->
+            <section class="temporal-section">
+                <h2>Análise Temporal</h2>
+                <div class="temporal-controls">
+                    <button class="temporal-btn active" id="btn-hoje">Hoje</button>
+                    <div class="date-filter">
+                        <label for="date-select">Filtrar por dia:</label>
+                        <select id="date-select">
+                            <option value="">Carregando...</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="temporal-stats" id="temporal-stats">
+                    <!-- Preenchido dinamicamente -->
+                </div>
+            </section>
+            
+            <!-- Exportação -->
+            <section class="export-section">
+                <h2>Exportação de Dados</h2>
+                <div class="export-controls">
+                    <div class="date-range">
+                        <div class="date-input-group">
+                            <label for="export-date-inicio">Data Início:</label>
+                            <input type="date" id="export-date-inicio">
+                        </div>
+                        <div class="date-input-group">
+                            <label for="export-date-fim">Data Fim:</label>
+                            <input type="date" id="export-date-fim">
+                        </div>
+                    </div>
+                    <div class="export-buttons">
+                        <button class="export-btn csv" id="export-csv">📊 Exportar CSV</button>
+                        <button class="export-btn txt" id="export-txt">📄 Exportar TXT</button>
+                    </div>
+                </div>
+            </section>
+            
+            <!-- Histórico -->
+            <section class="history-section">
+                <h2>Histórico de Feedbacks</h2>
+                <div class="table-container">
+                    <table class="history-table">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Satisfação</th>
+                                <th>Data</th>
+                                <th>Hora</th>
+                                <th>Dia da Semana</th>
+                            </tr>
+                        </thead>
+                        <tbody id="history-tbody">
+                            <tr>
+                                <td colspan="5" style="text-align: center; padding: 20px;">
+                                    Carregando...
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="pagination" id="pagination">
+                    <!-- Preenchido dinamicamente -->
+                </div>
+            </section>
+        </div>
+    </div>
+    
+    <script src="{{ url_for('static', filename='js/admin.js') }}"></script>
+</body>
+</html>
