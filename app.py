@@ -10,12 +10,23 @@ from openpyxl.styles import Font, PatternFill
 import firebase_admin
 from firebase_admin import credentials, firestore, auth
 import sys
+import json
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 app = Flask(__name__)
-app.secret_key = 'sua_chave_secreta_aqui_mude_para_producao'
+app.secret_key = os.environ.get('SECRET_KEY', 'sua_chave_secreta_aqui_mude_para_producao')
 
 # Configurações
-DATABASE = 'feedback.db'
+def _default_sqlite_path() -> str:
+    # Em serverless (Vercel), o filesystem do código é read-only.
+    # O único local gravável é tipicamente /tmp (ephemeral por instância).
+    if os.environ.get('VERCEL'):
+        return '/tmp/feedback.db'
+    return os.path.join(BASE_DIR, 'feedback.db')
+
+
+DATABASE = os.environ.get('SQLITE_PATH', '') or _default_sqlite_path()
 ADMIN_PASSWORD = 'admin123'  # Altere esta senha!
 
 # Admin via Firebase Auth
@@ -44,6 +55,28 @@ FIREBASE_WEB_CONFIG = {
 }
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+# Persistência no deploy (serverless): Firestore como fonte de verdade.
+FIRESTORE_PRIMARY = _env_bool('FIRESTORE_PRIMARY', default=bool(os.environ.get('VERCEL')))
+WRITE_SQLITE_SHADOW = _env_bool('WRITE_SQLITE_SHADOW', default=False)
+AUTO_REBUILD_FIRESTORE_META = _env_bool('AUTO_REBUILD_FIRESTORE_META', default=False)
+
+try:
+    FIRESTORE_REBUILD_MAX_DOCS = int(os.environ.get('FIRESTORE_REBUILD_MAX_DOCS', '0') or '0')
+except Exception:
+    FIRESTORE_REBUILD_MAX_DOCS = 0
+
+FIRESTORE_FEEDBACK_COLLECTION = os.environ.get('FIRESTORE_FEEDBACK_COLLECTION', 'feedback').strip() or 'feedback'
+FIRESTORE_META_COLLECTION = os.environ.get('FIRESTORE_META_COLLECTION', '_meta').strip() or '_meta'
+FIRESTORE_DAILY_COLLECTION = os.environ.get('FIRESTORE_DAILY_COLLECTION', '_meta_daily').strip() or '_meta_daily'
+
+
 def _is_admin_email_allowed(email: Optional[str]) -> bool:
     if not email:
         return False
@@ -62,7 +95,13 @@ def _is_admin_email_allowed(email: Optional[str]) -> bool:
 firebase_db = None
 try:
     if not firebase_admin._apps:
-        cred = credentials.Certificate('studio-7634777517-713ea-firebase-adminsdk-fbsvc-7669723ac0.json')
+        # Preferir credenciais via env var (útil em deploy). Caso contrário, usar o ficheiro no repo.
+        service_account_json = os.environ.get('FIREBASE_SERVICE_ACCOUNT_JSON', '').strip()
+        if service_account_json:
+            cred = credentials.Certificate(json.loads(service_account_json))
+        else:
+            cred_path = os.path.join(BASE_DIR, 'studio-7634777517-713ea-firebase-adminsdk-fbsvc-7669723ac0.json')
+            cred = credentials.Certificate(cred_path)
         firebase_admin.initialize_app(cred, {
             'databaseURL': 'https://studio-7634777517-713ea.firebaseio.com'
         })
@@ -72,8 +111,285 @@ except Exception as e:
     print(f"⚠ Aviso: Firebase não está disponível: {e}")
     print("  A aplicação continuará funcionando apenas com SQLite")
 
+
+def _firestore_enabled() -> bool:
+    return bool(firebase_db and firebase_admin._apps)
+
+
+def _firestore_client():
+    if not _firestore_enabled():
+        raise RuntimeError('Firestore não disponível (firebase_db=None)')
+    return firebase_db
+
+
+def _fs_feedback_col():
+    return _firestore_client().collection(FIRESTORE_FEEDBACK_COLLECTION)
+
+
+def _fs_meta_doc(name: str):
+    return _firestore_client().collection(FIRESTORE_META_COLLECTION).document(name)
+
+
+def _fs_daily_doc(date_str: str):
+    return _firestore_client().collection(FIRESTORE_DAILY_COLLECTION).document(date_str)
+
+
+def _firestore_rebuild_meta(max_docs: int = 0) -> dict:
+    """Reconstroi os contadores em _meta e _meta_daily a partir da coleção feedback."""
+    client = _firestore_client()
+
+    overall = {
+        'total': 0,
+        'muito_satisfeito': 0,
+        'satisfeito': 0,
+        'insatisfeito': 0,
+        'lastId': None,
+    }
+    daily = {}
+    max_id = 0
+    scanned = 0
+
+    for doc in _fs_feedback_col().stream():
+        scanned += 1
+        if max_docs and scanned > max_docs:
+            break
+
+        d = doc.to_dict() or {}
+        overall['total'] += 1
+
+        try:
+            fid = int(d.get('id') or 0)
+        except Exception:
+            fid = 0
+        if fid > max_id:
+            max_id = fid
+
+        grau = d.get('grau_satisfacao')
+        if grau in {'muito_satisfeito', 'satisfeito', 'insatisfeito'}:
+            overall[grau] += 1
+
+        date_str = d.get('data')
+        if date_str:
+            if date_str not in daily:
+                daily[date_str] = {
+                    'date': date_str,
+                    'total': 0,
+                    'muito_satisfeito': 0,
+                    'satisfeito': 0,
+                    'insatisfeito': 0,
+                    'lastId': None,
+                }
+            daily[date_str]['total'] += 1
+            if grau in {'muito_satisfeito', 'satisfeito', 'insatisfeito'}:
+                daily[date_str][grau] += 1
+            if fid and (daily[date_str]['lastId'] is None or fid > int(daily[date_str]['lastId'] or 0)):
+                daily[date_str]['lastId'] = fid
+
+    overall['lastId'] = max_id if max_id else overall['lastId']
+
+    stats_ref = _fs_meta_doc('feedbackStats')
+    counters_ref = _fs_meta_doc('counters')
+
+    # Escrever em batches (limite ~500 ops por commit)
+    batch = client.batch()
+    ops = 0
+
+    batch.set(stats_ref, {
+        **overall,
+        'updatedAt': firestore.SERVER_TIMESTAMP,
+    }, merge=False)
+    ops += 1
+
+    # feedbackNextId (se não houver max_id, manter mínimo 1)
+    next_id = max(1, int(max_id or 0) + 1)
+    batch.set(counters_ref, {
+        'feedbackNextId': next_id,
+        'updatedAt': firestore.SERVER_TIMESTAMP,
+    }, merge=True)
+    ops += 1
+
+    # Daily docs
+    for date_str, payload in daily.items():
+        batch.set(_fs_daily_doc(date_str), {
+            **payload,
+            'updatedAt': firestore.SERVER_TIMESTAMP,
+        }, merge=False)
+        ops += 1
+        if ops >= 450:
+            batch.commit()
+            batch = client.batch()
+            ops = 0
+
+    if ops:
+        batch.commit()
+
+    return {
+        'scanned': scanned,
+        'total': overall['total'],
+        'lastId': overall['lastId'],
+        'dates': len(daily),
+        'feedbackNextId': next_id,
+    }
+
+
+def _firestore_get_overall_stats_doc() -> dict:
+    """Lê o doc _meta/feedbackStats e (opcionalmente) reconstrói se não existir."""
+    stats_ref = _fs_meta_doc('feedbackStats')
+    snap = stats_ref.get()
+    if not snap.exists and AUTO_REBUILD_FIRESTORE_META:
+        try:
+            _firestore_rebuild_meta(max_docs=FIRESTORE_REBUILD_MAX_DOCS)
+        except Exception as e:
+            print(f"⚠ Aviso: auto-rebuild de meta falhou: {e}")
+        snap = stats_ref.get()
+    return snap.to_dict() or {}
+
+
+def _firestore_compute_next_id_from_existing() -> int:
+    """Retorna (max(id)+1) a partir dos docs existentes no Firestore."""
+    try:
+        query = _fs_feedback_col().order_by('id', direction=firestore.Query.DESCENDING).limit(1)
+        for doc in query.stream():
+            data = doc.to_dict() or {}
+            last_id = int(data.get('id') or 0)
+            return max(1, last_id + 1)
+    except Exception:
+        pass
+    return 1
+
+
+def _firestore_count_query(query) -> int:
+    """Conta docs em query. Usa agregação se disponível; caso contrário, stream() e conta."""
+    try:
+        if hasattr(query, 'count'):
+            agg = query.count()
+            res = agg.get()
+            # google-cloud-firestore devolve uma lista de AggregationResult
+            if res:
+                # suportar várias versões
+                first = res[0]
+                if hasattr(first, 'value'):
+                    return int(first.value)
+                if isinstance(first, dict) and 'value' in first:
+                    return int(first['value'])
+    except Exception:
+        pass
+
+    total = 0
+    for _ in query.stream():
+        total += 1
+    return total
+
+
+def _firestore_update_meta_for_feedback(transaction, feedback_id: int, feedback_data: dict):
+    grau = feedback_data.get('grau_satisfacao')
+    date_str = feedback_data.get('data')
+
+    stats_ref = _fs_meta_doc('feedbackStats')
+    daily_ref = _fs_daily_doc(date_str)
+    counters_ref = _fs_meta_doc('counters')
+
+    inc_common = {
+        'total': firestore.Increment(1),
+        'lastId': feedback_id,
+        'updatedAt': firestore.SERVER_TIMESTAMP,
+    }
+    if grau in {'muito_satisfeito', 'satisfeito', 'insatisfeito'}:
+        inc_common[grau] = firestore.Increment(1)
+
+    transaction.set(stats_ref, inc_common, merge=True)
+
+    daily_payload = {
+        'date': date_str,
+        'total': firestore.Increment(1),
+        'lastId': feedback_id,
+        'updatedAt': firestore.SERVER_TIMESTAMP,
+    }
+    if grau in {'muito_satisfeito', 'satisfeito', 'insatisfeito'}:
+        daily_payload[grau] = firestore.Increment(1)
+
+    transaction.set(daily_ref, daily_payload, merge=True)
+
+    # Garantir que o próximo id não fica "atrás" (útil quando ids vêm do SQLite)
+    try:
+        snap = counters_ref.get(transaction=transaction)
+        current_next = None
+        if snap.exists:
+            current_next = (snap.to_dict() or {}).get('feedbackNextId')
+        desired_next = int(feedback_id) + 1
+        if not current_next or int(current_next) < desired_next:
+            transaction.set(counters_ref, {'feedbackNextId': desired_next}, merge=True)
+    except Exception:
+        # Melhor esforço: se isto falhar, o gerador ainda tenta auto-inicializar depois
+        pass
+
+
+def _firestore_create_feedback_primary(feedback_data: dict) -> int:
+    """Cria feedback no Firestore e devolve um id sequencial (transação)."""
+    client = _firestore_client()
+    transaction = client.transaction()
+    initial_next_id = _firestore_compute_next_id_from_existing()
+
+    @firestore.transactional
+    def _txn(transaction):
+        counters_ref = _fs_meta_doc('counters')
+        snap = counters_ref.get(transaction=transaction)
+        next_id = None
+        if snap.exists:
+            next_id = (snap.to_dict() or {}).get('feedbackNextId')
+        if not next_id:
+            next_id = initial_next_id
+
+        feedback_id = int(next_id)
+
+        # Reservar o próximo id
+        transaction.set(counters_ref, {'feedbackNextId': feedback_id + 1}, merge=True)
+
+        # Criar doc do feedback
+        doc_ref = _fs_feedback_col().document(f'feedback_{feedback_id}')
+        payload = dict(feedback_data)
+        payload['id'] = feedback_id
+        payload['createdAt'] = firestore.SERVER_TIMESTAMP
+        transaction.set(doc_ref, payload)
+
+        # Atualizar meta (stats/daily)
+        _firestore_update_meta_for_feedback(transaction, feedback_id, payload)
+        return feedback_id
+
+    return _txn(transaction)
+
+
+def _firestore_sync_feedback_known_id(feedback_id: int, feedback_data: dict) -> None:
+    """Sincroniza um feedback com id conhecido (ex.: vindo do SQLite) e atualiza meta."""
+    if not _firestore_enabled():
+        return
+
+    client = _firestore_client()
+    transaction = client.transaction()
+
+    @firestore.transactional
+    def _txn(transaction):
+        doc_ref = _fs_feedback_col().document(f'feedback_{feedback_id}')
+        payload = dict(feedback_data)
+        payload['id'] = int(feedback_id)
+        payload.setdefault('createdAt', firestore.SERVER_TIMESTAMP)
+        transaction.set(doc_ref, payload, merge=True)
+        _firestore_update_meta_for_feedback(transaction, int(feedback_id), payload)
+
+    try:
+        _txn(transaction)
+    except Exception as e:
+        print(f"⚠ Aviso: Erro ao sincronizar/atualizar meta no Firestore: {e}")
+
 def get_db():
     """Conecta ao banco de dados SQLite"""
+    # Garantir que a pasta do DB existe (ex.: /tmp)
+    try:
+        db_dir = os.path.dirname(DATABASE)
+        if db_dir and not os.path.exists(db_dir):
+            os.makedirs(db_dir, exist_ok=True)
+    except Exception:
+        pass
     conn = sqlite3.connect(DATABASE)
     conn.row_factory = sqlite3.Row
     return conn
@@ -95,7 +411,11 @@ def init_db():
     conn.close()
 
 # Inicializar banco de dados ao iniciar a aplicação
-init_db()
+try:
+    init_db()
+except Exception as e:
+    # Não derrubar a app no import (importante em ambientes serverless)
+    print(f"⚠ Aviso: falha ao inicializar SQLite em '{DATABASE}': {e}")
 
 @app.route('/')
 def index():
@@ -116,10 +436,13 @@ def health_check():
     except Exception as e:
         sqlite_error = str(e)
 
-    firebase_ok = bool(firebase_db and firebase_admin._apps)
+    firebase_ok = _firestore_enabled()
+    storage_mode = 'firestore-primary' if FIRESTORE_PRIMARY else 'sqlite-primary'
+    ok = firebase_ok if FIRESTORE_PRIMARY else sqlite_ok
 
     return jsonify({
-        'ok': sqlite_ok,
+        'ok': ok,
+        'storageMode': storage_mode,
         'time': datetime.now().isoformat(),
         'python': sys.version.split(' ')[0],
         'sqlite': {
@@ -141,6 +464,29 @@ def public_summary():
     """Resumo público para o ecrã principal (sem auth)."""
     try:
         hoje = datetime.now().strftime('%Y-%m-%d')
+
+        if FIRESTORE_PRIMARY:
+            if not _firestore_enabled():
+                return jsonify({'error': 'Firestore não disponível'}), 503
+
+            stats = _firestore_get_overall_stats_doc()
+            daily = (_fs_daily_doc(hoje).get().to_dict() or {})
+
+            hoje_result = {
+                'muito_satisfeito': int(daily.get('muito_satisfeito') or 0),
+                'satisfeito': int(daily.get('satisfeito') or 0),
+                'insatisfeito': int(daily.get('insatisfeito') or 0),
+            }
+
+            return jsonify({
+                'date': hoje,
+                'today': hoje_result,
+                'todayTotal': sum(hoje_result.values()),
+                'total': int(stats.get('total') or 0),
+                'lastId': stats.get('lastId'),
+                'firebaseAvailable': True,
+            })
+
         conn = get_db()
 
         # Totais de hoje
@@ -205,8 +551,35 @@ def registrar_feedback():
             'dia_semana': dia_semana,
             'timestamp': timestamp_str
         }
-        
-        # Guardar no SQLite
+
+        # Em deploy (FIRESTORE_PRIMARY/VERCEL), o Firestore é a fonte de verdade.
+        if FIRESTORE_PRIMARY:
+            if not _firestore_enabled():
+                return jsonify({'error': 'Firestore não disponível no modo persistente'}), 503
+
+            feedback_id = _firestore_create_feedback_primary(feedback_data)
+            feedback_data['id'] = feedback_id
+
+            # SQLite em serverless é apenas cache ephemeral (opcional)
+            if WRITE_SQLITE_SHADOW:
+                try:
+                    conn = get_db()
+                    conn.execute(
+                        'INSERT INTO feedback (id, grau_satisfacao, data, hora, dia_semana) VALUES (?, ?, ?, ?, ?)',
+                        (feedback_id, grau_satisfacao, data_str, hora_str, dia_semana)
+                    )
+                    conn.commit()
+                    conn.close()
+                except Exception:
+                    pass
+
+            return jsonify({
+                'success': True,
+                'message': 'Obrigado pelo seu feedback!',
+                'id': feedback_id
+            })
+
+        # Modo local/normal: SQLite primeiro, depois sincroniza Firestore
         conn = get_db()
         cursor = conn.execute(
             'INSERT INTO feedback (grau_satisfacao, data, hora, dia_semana) VALUES (?, ?, ?, ?)',
@@ -216,17 +589,11 @@ def registrar_feedback():
         feedback_id = cursor.lastrowid
         conn.close()
 
-        # Adicionar id ao payload (útil para Firestore e integrações)
         feedback_data['id'] = feedback_id
-        
-        # Guardar no Firebase (Firestore)
-        if firebase_db:
-            try:
-                firebase_db.collection('feedback').document(f'feedback_{feedback_id}').set(feedback_data)
-                print(f"✓ Feedback {feedback_id} sincronizado com Firebase")
-            except Exception as firebase_error:
-                # Log do erro mas não falha a resposta
-                print(f"⚠ Aviso: Erro ao guardar no Firebase: {firebase_error}")
+
+        # Guardar no Firebase (Firestore) + atualizar meta
+        if _firestore_enabled():
+            _firestore_sync_feedback_known_id(int(feedback_id), feedback_data)
         
         return jsonify({
             'success': True,
@@ -343,43 +710,61 @@ def get_stats():
         return jsonify({'error': 'Não autorizado'}), 401
     
     try:
+        if FIRESTORE_PRIMARY:
+            if not _firestore_enabled():
+                return jsonify({'error': 'Firestore não disponível'}), 503
+
+            stats = _firestore_get_overall_stats_doc()
+            total_geral = int(stats.get('total') or 0)
+
+            resultado = {
+                'muito_satisfeito': int(stats.get('muito_satisfeito') or 0),
+                'satisfeito': int(stats.get('satisfeito') or 0),
+                'insatisfeito': int(stats.get('insatisfeito') or 0),
+                'total': total_geral,
+            }
+
+            percentagens = {
+                'muito_satisfeito': 0,
+                'satisfeito': 0,
+                'insatisfeito': 0,
+            }
+            if total_geral > 0:
+                for key in ['muito_satisfeito', 'satisfeito', 'insatisfeito']:
+                    percentagens[key] = round((resultado[key] / total_geral) * 100, 2)
+            resultado['percentagens'] = percentagens
+            return jsonify(resultado)
+
         conn = get_db()
-        
-        # Total por tipo de satisfação
-        stats = conn.execute('''
+        stats_rows = conn.execute('''
             SELECT grau_satisfacao, COUNT(*) as total
             FROM feedback
             GROUP BY grau_satisfacao
         ''').fetchall()
-        
-        # Total geral
         total_geral = conn.execute('SELECT COUNT(*) as total FROM feedback').fetchone()['total']
-        
         conn.close()
-        
-        # Calcular percentagens
+
         resultado = {
             'muito_satisfeito': 0,
             'satisfeito': 0,
             'insatisfeito': 0,
             'total': total_geral
         }
-        
+
         percentagens = {
             'muito_satisfeito': 0,
             'satisfeito': 0,
             'insatisfeito': 0
         }
-        
-        for row in stats:
+
+        for row in stats_rows:
             grau = row['grau_satisfacao']
             total = row['total']
             resultado[grau] = total
             if total_geral > 0:
                 percentagens[grau] = round((total / total_geral) * 100, 2)
-        
+
         resultado['percentagens'] = percentagens
-        
         return jsonify(resultado)
     
     except Exception as e:
@@ -393,37 +778,44 @@ def get_daily_stats():
     
     try:
         data_filtro = request.args.get('data')
-        
+
+        if FIRESTORE_PRIMARY:
+            if not _firestore_enabled():
+                return jsonify({'error': 'Firestore não disponível'}), 503
+
+            date_str = data_filtro or datetime.now().strftime('%Y-%m-%d')
+            daily = (_fs_daily_doc(date_str).get().to_dict() or {})
+            return jsonify({
+                'muito_satisfeito': int(daily.get('muito_satisfeito') or 0),
+                'satisfeito': int(daily.get('satisfeito') or 0),
+                'insatisfeito': int(daily.get('insatisfeito') or 0),
+            })
+
         conn = get_db()
-        
         if data_filtro:
-            stats = conn.execute('''
+            stats_rows = conn.execute('''
                 SELECT grau_satisfacao, COUNT(*) as total
                 FROM feedback
                 WHERE data = ?
                 GROUP BY grau_satisfacao
             ''', (data_filtro,)).fetchall()
         else:
-            # Retorna o dia atual
             hoje = datetime.now().strftime('%Y-%m-%d')
-            stats = conn.execute('''
+            stats_rows = conn.execute('''
                 SELECT grau_satisfacao, COUNT(*) as total
                 FROM feedback
                 WHERE data = ?
                 GROUP BY grau_satisfacao
             ''', (hoje,)).fetchall()
-        
         conn.close()
-        
+
         resultado = {
             'muito_satisfeito': 0,
             'satisfeito': 0,
             'insatisfeito': 0
         }
-        
-        for row in stats:
+        for row in stats_rows:
             resultado[row['grau_satisfacao']] = row['total']
-        
         return jsonify(resultado)
     
     except Exception as e:
@@ -444,24 +836,53 @@ def get_comparison_stats():
         if not all([data1_inicio, data1_fim, data2_inicio, data2_fim]):
             return jsonify({'error': 'Datas inválidas'}), 400
         
+        if FIRESTORE_PRIMARY:
+            if not _firestore_enabled():
+                return jsonify({'error': 'Firestore não disponível'}), 503
+
+            def _sum_period(start: str, end: str):
+                totals = {'muito_satisfeito': 0, 'satisfeito': 0, 'insatisfeito': 0, 'total': 0}
+                q = _firestore_client().collection(FIRESTORE_DAILY_COLLECTION).where('date', '>=', start).where('date', '<=', end)
+                for doc in q.stream():
+                    d = doc.to_dict() or {}
+                    for key in ['muito_satisfeito', 'satisfeito', 'insatisfeito']:
+                        totals[key] += int(d.get(key) or 0)
+                    totals['total'] += int(d.get('total') or 0)
+                return totals
+
+            periodo1 = _sum_period(data1_inicio, data1_fim)
+            periodo2 = _sum_period(data2_inicio, data2_fim)
+
+            resultado = {
+                'periodo1': periodo1,
+                'periodo2': periodo2,
+            }
+
+            resultado['variacao'] = {}
+            for key in ['muito_satisfeito', 'satisfeito', 'insatisfeito']:
+                val1 = resultado['periodo1'][key]
+                val2 = resultado['periodo2'][key]
+                if val1 == 0:
+                    variacao = 100 if val2 > 0 else 0
+                else:
+                    variacao = round(((val2 - val1) / val1) * 100, 2)
+                resultado['variacao'][key] = variacao
+
+            return jsonify(resultado)
+
         conn = get_db()
-        
-        # Período 1
         stats1 = conn.execute('''
             SELECT grau_satisfacao, COUNT(*) as total
             FROM feedback
             WHERE data BETWEEN ? AND ?
             GROUP BY grau_satisfacao
         ''', (data1_inicio, data1_fim)).fetchall()
-        
-        # Período 2
         stats2 = conn.execute('''
             SELECT grau_satisfacao, COUNT(*) as total
             FROM feedback
             WHERE data BETWEEN ? AND ?
             GROUP BY grau_satisfacao
         ''', (data2_inicio, data2_fim)).fetchall()
-        
         conn.close()
         
         # Formatar resultado
@@ -523,6 +944,79 @@ def get_historico():
         data_inicio = (request.args.get('data_inicio') or '').strip()
         data_fim = (request.args.get('data_fim') or '').strip()
         
+        if FIRESTORE_PRIMARY:
+            if not _firestore_enabled():
+                return jsonify({'error': 'Firestore não disponível'}), 503
+
+            # Pesquisa por ID exato
+            if q.isdigit():
+                fid = int(q)
+                doc = _fs_feedback_col().document(f'feedback_{fid}').get()
+                if not doc.exists:
+                    return jsonify({'total': 0, 'page': page, 'per_page': per_page, 'total_pages': 0, 'registros': []})
+                data_doc = doc.to_dict() or {}
+                registro = {
+                    'id': data_doc.get('id'),
+                    'grau_satisfacao': data_doc.get('grau_satisfacao'),
+                    'data': data_doc.get('data'),
+                    'hora': data_doc.get('hora'),
+                    'dia_semana': data_doc.get('dia_semana'),
+                }
+                return jsonify({'total': 1, 'page': page, 'per_page': per_page, 'total_pages': 1, 'registros': [registro]})
+
+            # Para evitar dependência de índices compostos no Firestore, fazemos:
+            # - filtros de data no Firestore (campo único)
+            # - filtro de grau e ordenação fina em Python
+            query = _fs_feedback_col()
+            if data_inicio:
+                query = query.where('data', '>=', data_inicio)
+            if data_fim:
+                query = query.where('data', '<=', data_fim)
+
+            # Ordenação principal: por id desc (mais recente primeiro). Se o campo id não existir em docs antigos,
+            # o Firestore pode falhar; nesse caso, cai no ordering por data.
+            try:
+                query = query.order_by('id', direction=firestore.Query.DESCENDING)
+                docs_iter = query.stream()
+            except Exception:
+                query = query.order_by('data', direction=firestore.Query.DESCENDING)
+                docs_iter = query.stream()
+
+            all_rows = []
+            for doc in docs_iter:
+                d = doc.to_dict() or {}
+                all_rows.append({
+                    'id': d.get('id'),
+                    'grau_satisfacao': d.get('grau_satisfacao'),
+                    'data': d.get('data'),
+                    'hora': d.get('hora'),
+                    'dia_semana': d.get('dia_semana'),
+                })
+
+            if grau in ['muito_satisfeito', 'satisfeito', 'insatisfeito']:
+                all_rows = [r for r in all_rows if r.get('grau_satisfacao') == grau]
+
+            # Ordenação final semelhante ao SQLite (data desc, hora desc) quando possível
+            def _sort_key(r):
+                return (
+                    r.get('data') or '',
+                    r.get('hora') or '',
+                    int(r.get('id') or 0),
+                )
+
+            all_rows.sort(key=_sort_key, reverse=True)
+
+            total = len(all_rows)
+            page_rows = all_rows[offset:offset + per_page]
+
+            return jsonify({
+                'total': total,
+                'page': page,
+                'per_page': per_page,
+                'total_pages': (total + per_page - 1) // per_page,
+                'registros': page_rows,
+            })
+
         conn = get_db()
         
         where = []
@@ -586,23 +1080,44 @@ def export_csv():
         data_inicio = request.args.get('data_inicio')
         data_fim = request.args.get('data_fim')
         
-        conn = get_db()
-        
-        if data_inicio and data_fim:
-            registros = conn.execute('''
-                SELECT id, grau_satisfacao, data, hora, dia_semana
-                FROM feedback
-                WHERE data BETWEEN ? AND ?
-                ORDER BY data, hora
-            ''', (data_inicio, data_fim)).fetchall()
+        if FIRESTORE_PRIMARY:
+            if not _firestore_enabled():
+                return jsonify({'error': 'Firestore não disponível'}), 503
+
+            query = _fs_feedback_col()
+            if data_inicio:
+                query = query.where('data', '>=', data_inicio)
+            if data_fim:
+                query = query.where('data', '<=', data_fim)
+
+            registros = []
+            for doc in query.stream():
+                d = doc.to_dict() or {}
+                registros.append({
+                    'id': d.get('id'),
+                    'grau_satisfacao': d.get('grau_satisfacao'),
+                    'data': d.get('data'),
+                    'hora': d.get('hora'),
+                    'dia_semana': d.get('dia_semana'),
+                })
+
+            registros.sort(key=lambda r: (r.get('data') or '', r.get('hora') or '', int(r.get('id') or 0)))
         else:
-            registros = conn.execute('''
-                SELECT id, grau_satisfacao, data, hora, dia_semana
-                FROM feedback
-                ORDER BY data, hora
-            ''').fetchall()
-        
-        conn.close()
+            conn = get_db()
+            if data_inicio and data_fim:
+                registros = conn.execute('''
+                    SELECT id, grau_satisfacao, data, hora, dia_semana
+                    FROM feedback
+                    WHERE data BETWEEN ? AND ?
+                    ORDER BY data, hora
+                ''', (data_inicio, data_fim)).fetchall()
+            else:
+                registros = conn.execute('''
+                    SELECT id, grau_satisfacao, data, hora, dia_semana
+                    FROM feedback
+                    ORDER BY data, hora
+                ''').fetchall()
+            conn.close()
         
         # Criar workbook Excel
         wb = Workbook()
@@ -670,21 +1185,34 @@ def export_csv_plain():
         data_inicio = request.args.get('data_inicio')
         data_fim = request.args.get('data_fim')
 
-        conn = get_db()
-        if data_inicio and data_fim:
-            registros = conn.execute('''
-                SELECT id, grau_satisfacao, data, hora, dia_semana
-                FROM feedback
-                WHERE data BETWEEN ? AND ?
-                ORDER BY data, hora
-            ''', (data_inicio, data_fim)).fetchall()
+        if FIRESTORE_PRIMARY:
+            if not _firestore_enabled():
+                return jsonify({'error': 'Firestore não disponível'}), 503
+            query = _fs_feedback_col()
+            if data_inicio:
+                query = query.where('data', '>=', data_inicio)
+            if data_fim:
+                query = query.where('data', '<=', data_fim)
+            registros = []
+            for doc in query.stream():
+                registros.append(doc.to_dict() or {})
+            registros.sort(key=lambda r: (r.get('data') or '', r.get('hora') or '', int(r.get('id') or 0)))
         else:
-            registros = conn.execute('''
-                SELECT id, grau_satisfacao, data, hora, dia_semana
-                FROM feedback
-                ORDER BY data, hora
-            ''').fetchall()
-        conn.close()
+            conn = get_db()
+            if data_inicio and data_fim:
+                registros = conn.execute('''
+                    SELECT id, grau_satisfacao, data, hora, dia_semana
+                    FROM feedback
+                    WHERE data BETWEEN ? AND ?
+                    ORDER BY data, hora
+                ''', (data_inicio, data_fim)).fetchall()
+            else:
+                registros = conn.execute('''
+                    SELECT id, grau_satisfacao, data, hora, dia_semana
+                    FROM feedback
+                    ORDER BY data, hora
+                ''').fetchall()
+            conn.close()
 
         grau_map = {
             'muito_satisfeito': 'Muito Satisfeito',
@@ -697,11 +1225,12 @@ def export_csv_plain():
         writer.writerow(['id', 'grau_satisfacao', 'data', 'hora', 'dia_semana'])
         for row in registros:
             writer.writerow([
-                row['id'],
-                grau_map.get(row['grau_satisfacao'], row['grau_satisfacao']),
-                row['data'],
-                row['hora'],
-                row['dia_semana'],
+                row.get('id') if isinstance(row, dict) else row['id'],
+                grau_map.get((row.get('grau_satisfacao') if isinstance(row, dict) else row['grau_satisfacao']),
+                             (row.get('grau_satisfacao') if isinstance(row, dict) else row['grau_satisfacao'])),
+                (row.get('data') if isinstance(row, dict) else row['data']),
+                (row.get('hora') if isinstance(row, dict) else row['hora']),
+                (row.get('dia_semana') if isinstance(row, dict) else row['dia_semana']),
             ])
 
         csv_bytes = output.getvalue().encode('utf-8')
@@ -722,11 +1251,19 @@ def admin_system():
         return jsonify({'error': 'Não autorizado'}), 401
 
     try:
-        conn = get_db()
-        total = conn.execute('SELECT COUNT(*) as total FROM feedback').fetchone()['total']
-        last_id_row = conn.execute('SELECT MAX(id) as last_id FROM feedback').fetchone()
-        last_id = last_id_row['last_id'] if last_id_row else None
-        conn.close()
+        if FIRESTORE_PRIMARY:
+            if not _firestore_enabled():
+                return jsonify({'error': 'Firestore não disponível'}), 503
+
+            stats = _firestore_get_overall_stats_doc()
+            total = int(stats.get('total') or 0)
+            last_id = stats.get('lastId')
+        else:
+            conn = get_db()
+            total = conn.execute('SELECT COUNT(*) as total FROM feedback').fetchone()['total']
+            last_id_row = conn.execute('SELECT MAX(id) as last_id FROM feedback').fetchone()
+            last_id = last_id_row['last_id'] if last_id_row else None
+            conn.close()
 
         db_size = None
         try:
@@ -756,6 +1293,30 @@ def admin_system():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+
+@app.route('/api/admin/firestore/rebuild-meta', methods=['POST'])
+def admin_firestore_rebuild_meta():
+    """Reconstrói os contadores do Firestore a partir da coleção feedback (requer admin)."""
+    if not session.get('admin_logged_in'):
+        return jsonify({'error': 'Não autorizado'}), 401
+    if not _firestore_enabled():
+        return jsonify({'error': 'Firestore não disponível'}), 503
+
+    try:
+        body = request.get_json(silent=True) or {}
+        max_docs = body.get('maxDocs')
+        if max_docs is None:
+            max_docs = FIRESTORE_REBUILD_MAX_DOCS
+        try:
+            max_docs = int(max_docs or 0)
+        except Exception:
+            max_docs = 0
+
+        result = _firestore_rebuild_meta(max_docs=max_docs)
+        return jsonify({'success': True, **result})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/admin/export/txt')
 def export_txt():
     """Exporta dados em formato TXT"""
@@ -766,23 +1327,34 @@ def export_txt():
         data_inicio = request.args.get('data_inicio')
         data_fim = request.args.get('data_fim')
         
-        conn = get_db()
-        
-        if data_inicio and data_fim:
-            registros = conn.execute('''
-                SELECT id, grau_satisfacao, data, hora, dia_semana
-                FROM feedback
-                WHERE data BETWEEN ? AND ?
-                ORDER BY data, hora
-            ''', (data_inicio, data_fim)).fetchall()
+        if FIRESTORE_PRIMARY:
+            if not _firestore_enabled():
+                return jsonify({'error': 'Firestore não disponível'}), 503
+            query = _fs_feedback_col()
+            if data_inicio:
+                query = query.where('data', '>=', data_inicio)
+            if data_fim:
+                query = query.where('data', '<=', data_fim)
+            registros = []
+            for doc in query.stream():
+                registros.append(doc.to_dict() or {})
+            registros.sort(key=lambda r: (r.get('data') or '', r.get('hora') or '', int(r.get('id') or 0)))
         else:
-            registros = conn.execute('''
-                SELECT id, grau_satisfacao, data, hora, dia_semana
-                FROM feedback
-                ORDER BY data, hora
-            ''').fetchall()
-        
-        conn.close()
+            conn = get_db()
+            if data_inicio and data_fim:
+                registros = conn.execute('''
+                    SELECT id, grau_satisfacao, data, hora, dia_semana
+                    FROM feedback
+                    WHERE data BETWEEN ? AND ?
+                    ORDER BY data, hora
+                ''', (data_inicio, data_fim)).fetchall()
+            else:
+                registros = conn.execute('''
+                    SELECT id, grau_satisfacao, data, hora, dia_semana
+                    FROM feedback
+                    ORDER BY data, hora
+                ''').fetchall()
+            conn.close()
         
         # Criar TXT em memória
         output = io.StringIO()
@@ -797,11 +1369,24 @@ def export_txt():
         }
         
         for row in registros:
-            output.write(f"ID: {row['id']}\n")
-            output.write(f"Grau de Satisfação: {grau_map.get(row['grau_satisfacao'], row['grau_satisfacao'])}\n")
-            output.write(f"Data: {row['data']}\n")
-            output.write(f"Hora: {row['hora']}\n")
-            output.write(f"Dia da Semana: {row['dia_semana']}\n")
+            if isinstance(row, dict):
+                rid = row.get('id')
+                rg = row.get('grau_satisfacao')
+                rd = row.get('data')
+                rh = row.get('hora')
+                rds = row.get('dia_semana')
+            else:
+                rid = row['id']
+                rg = row['grau_satisfacao']
+                rd = row['data']
+                rh = row['hora']
+                rds = row['dia_semana']
+
+            output.write(f"ID: {rid}\n")
+            output.write(f"Grau de Satisfação: {grau_map.get(rg, rg)}\n")
+            output.write(f"Data: {rd}\n")
+            output.write(f"Hora: {rh}\n")
+            output.write(f"Dia da Semana: {rds}\n")
             output.write('-' * 80 + '\n\n')
         
         output.write(f"\nTotal de registros: {len(registros)}\n")
@@ -826,6 +1411,18 @@ def get_available_dates():
         return jsonify({'error': 'Não autorizado'}), 401
     
     try:
+        if FIRESTORE_PRIMARY:
+            if not _firestore_enabled():
+                return jsonify({'error': 'Firestore não disponível'}), 503
+
+            q = _firestore_client().collection(FIRESTORE_DAILY_COLLECTION).order_by('date', direction=firestore.Query.DESCENDING)
+            dates = []
+            for doc in q.stream():
+                d = doc.to_dict() or {}
+                if d.get('date'):
+                    dates.append(d['date'])
+            return jsonify(dates)
+
         conn = get_db()
         dates = conn.execute('''
             SELECT DISTINCT data
@@ -833,7 +1430,6 @@ def get_available_dates():
             ORDER BY data DESC
         ''').fetchall()
         conn.close()
-        
         return jsonify([row['data'] for row in dates])
     
     except Exception as e:

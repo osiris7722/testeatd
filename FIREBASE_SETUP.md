@@ -136,6 +136,85 @@ export ADMIN_EMAILS="admin1@exemplo.com,admin2@exemplo.com"
 export ADMIN_EMAIL_DOMAIN="exemplo.com"
 ```
 
+## Deploy no Vercel (importante)
+
+### SQLite no Vercel
+
+No Vercel (serverless), o filesystem do código é **read-only**. Por isso o SQLite **não pode** gravar em `feedback.db` na raiz.
+
+Foi ajustado para usar automaticamente:
+
+- `'/tmp/feedback.db'` quando `VERCEL=1`
+
+Podes também forçar com:
+
+```bash
+export SQLITE_PATH="/tmp/feedback.db"
+```
+
+Nota: `'/tmp'` é **ephemeral** (pode limpar a cada cold start). Para dados persistentes em produção, o ideal é considerar o Firebase/Firestore como fonte principal (a app já sincroniza para lá).
+
+### Persistência total no deploy (Firestore como primário)
+
+Para ter **persistência total no Vercel**, a app foi ajustada para usar **Firestore como fonte de verdade** quando:
+
+- `VERCEL=1` (automático no deploy), ou
+- `FIRESTORE_PRIMARY=1`
+
+Neste modo:
+
+- `POST /api/feedback` **cria o registo diretamente no Firestore** e devolve um `id` sequencial.
+- O dashboard (`/api/admin/*`) **lê do Firestore**, não do SQLite.
+- O SQLite pode existir apenas como cache ephemeral em `/tmp` (opcional).
+
+#### Coleções/Docs usados pelo modo persistente
+
+- Coleção `feedback` (documentos `feedback_<id>`) com campos: `id`, `grau_satisfacao`, `data`, `hora`, `dia_semana`, `timestamp` e `createdAt`.
+- Doc `_meta/feedbackStats`: contadores globais (`total`, `muito_satisfeito`, `satisfeito`, `insatisfeito`, `lastId`).
+- Coleção `_meta_daily/<YYYY-MM-DD>`: contadores por dia.
+- Doc `_meta/counters`: guarda `feedbackNextId` para gerar IDs sequenciais.
+
+Se já tinhas dados antigos na coleção `feedback` antes desta funcionalidade de contadores, os contadores podem começar a 0. Para corrigir:
+
+- Faz login no admin e chama `POST /api/admin/firestore/rebuild-meta`
+
+Isto reconstrói `_meta/feedbackStats`, `_meta_daily/*` e ajusta `feedbackNextId`.
+
+#### Variáveis de ambiente recomendadas (Vercel)
+
+- `SECRET_KEY` (obrigatório para sessões do admin)
+- `FIREBASE_SERVICE_ACCOUNT_JSON` (obrigatório para o modo persistente)
+
+Opcionais:
+
+- `FIRESTORE_PRIMARY=1` (força Firestore como primário fora do Vercel)
+- `WRITE_SQLITE_SHADOW=1` (escreve também no SQLite como “sombra”, mesmo no modo Firestore)
+- `AUTO_REBUILD_FIRESTORE_META=1` (se `_meta/feedbackStats` não existir, tenta reconstruir automaticamente)
+- `FIRESTORE_REBUILD_MAX_DOCS` (limite opcional para o auto-rebuild; `0` = sem limite)
+- `FIRESTORE_FEEDBACK_COLLECTION`, `FIRESTORE_META_COLLECTION`, `FIRESTORE_DAILY_COLLECTION` (se quiseres renomear)
+
+### Variáveis de ambiente recomendadas no Vercel
+
+- `SECRET_KEY` (obrigatório para sessões de admin)
+- `FIREBASE_SERVICE_ACCOUNT_JSON` (recomendado em vez de subir o ficheiro `.json` no repo)
+- `ADMIN_EMAILS` ou `ADMIN_EMAIL_DOMAIN` (recomendado)
+
+Também podes (opcional) definir o Firebase Web config via env vars:
+
+- `FIREBASE_API_KEY`, `FIREBASE_AUTH_DOMAIN`, `FIREBASE_PROJECT_ID`, `FIREBASE_APP_ID` (e restantes)
+
+### Endpoint para testar
+
+Depois do deploy, testa:
+
+- `/api/health`
+
+Se isto responder, a função no Vercel está a ser invocada corretamente.
+
+Para confirmar que o modo persistente está ativo, o `/api/health` devolve também:
+
+- `storageMode: "firestore-primary"`
+
 ## Verifying Firebase Connection
 
 Para verificar se Firebase está funcionando:
