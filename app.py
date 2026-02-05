@@ -11,6 +11,7 @@ import firebase_admin
 from firebase_admin import credentials, firestore, auth
 import sys
 import json
+import base64
 
 app = Flask(__name__)
 
@@ -77,14 +78,28 @@ try:
     if not firebase_admin._apps:
         # Preferir credenciais por variável de ambiente em produção (Vercel/Preview)
         # - FIREBASE_SERVICE_ACCOUNT_JSON: conteúdo JSON completo do service account
+        # - FIREBASE_SERVICE_ACCOUNT_JSON_B64: o mesmo JSON, mas em Base64 (mais fácil de colar em plataformas)
         # - GOOGLE_APPLICATION_CREDENTIALS: path para um ficheiro com credenciais
         # - FIREBASE_SERVICE_ACCOUNT_FILE: path alternativo para um ficheiro de credenciais
+        env_json_b64 = os.environ.get('FIREBASE_SERVICE_ACCOUNT_JSON_B64', '').strip()
         env_json = os.environ.get('FIREBASE_SERVICE_ACCOUNT_JSON', '').strip()
+
+        # Preferir Base64 quando existir (evita conflitos com um FIREBASE_SERVICE_ACCOUNT_JSON mal definido)
+        if env_json_b64:
+            try:
+                env_json = base64.b64decode(env_json_b64).decode('utf-8', errors='strict').strip()
+                firebase_cred_source = 'FIREBASE_SERVICE_ACCOUNT_JSON_B64'
+            except Exception as decode_error:
+                raise RuntimeError(f'FIREBASE_SERVICE_ACCOUNT_JSON_B64 inválido: {decode_error}')
 
         cred_obj = None
         if env_json:
-            cred_obj = credentials.Certificate(json.loads(env_json))
-            firebase_cred_source = 'FIREBASE_SERVICE_ACCOUNT_JSON'
+            try:
+                cred_obj = credentials.Certificate(json.loads(env_json))
+                if firebase_cred_source != 'FIREBASE_SERVICE_ACCOUNT_JSON_B64':
+                    firebase_cred_source = 'FIREBASE_SERVICE_ACCOUNT_JSON'
+            except Exception as json_error:
+                raise RuntimeError(f'FIREBASE_SERVICE_ACCOUNT_JSON inválido: {json_error}')
         else:
             base_dir = os.path.dirname(os.path.abspath(__file__))
             default_filename = 'studio-7634777517-713ea-firebase-adminsdk-fbsvc-7669723ac0.json'

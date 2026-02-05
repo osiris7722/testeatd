@@ -142,6 +142,14 @@ Em deploys (ex: Vercel/Replit), não contes que o ficheiro JSON esteja presente 
 
 - `FIREBASE_SERVICE_ACCOUNT_JSON` = JSON completo do ficheiro `studio-7634777517-713ea-firebase-adminsdk-...json`
 
+Se a tua plataforma “estragar” o JSON ao colar (muito comum), usa Base64:
+
+- `FIREBASE_SERVICE_ACCOUNT_JSON_B64` = o mesmo JSON, mas codificado em Base64
+
+Notas:
+
+- Se definires `FIREBASE_SERVICE_ACCOUNT_JSON_B64`, o backend passa a **preferir** esta opção (mesmo que `FIREBASE_SERVICE_ACCOUNT_JSON` exista), porque em algumas plataformas o JSON “normal” fica corrompido ao colar.
+
 Alternativa (quando preferires apontar para um ficheiro no runtime):
 
 - `FIREBASE_SERVICE_ACCOUNT_FILE` = path para o ficheiro JSON
@@ -154,9 +162,10 @@ Opcional:
 O backend tenta nesta ordem:
 
 1) `FIREBASE_SERVICE_ACCOUNT_JSON`
-2) `FIREBASE_SERVICE_ACCOUNT_FILE`
-3) `GOOGLE_APPLICATION_CREDENTIALS`
-4) ficheiro JSON incluído junto do `app.py` (local)
+2) `FIREBASE_SERVICE_ACCOUNT_JSON_B64`
+3) `FIREBASE_SERVICE_ACCOUNT_FILE`
+4) `GOOGLE_APPLICATION_CREDENTIALS`
+5) ficheiro JSON incluído junto do `app.py` (local)
 
 Dica de diagnóstico:
 
