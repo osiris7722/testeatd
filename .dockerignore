@@ -1,0 +1,23 @@
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.db
+*.log
+.DS_Store
+.vscode/
+.idea/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Don't bake service account keys into images
+studio-7634777517-713ea-firebase-adminsdk-fbsvc-7669723ac0.json
+
+# Frontend app (not needed in backend container)
+testeatd/node_modules/
+testeatd/build/
+testeatd/.cache/

@@ -162,6 +162,71 @@ Dica de diagnóstico:
 
 - Define `DEBUG_DIAGNOSTICS=1` e abre `GET /api/health` para veres `firebase.credSource`, `firebase.error` e `firebase.triedPaths`.
 
+## Deploy (Firebase Hosting + Cloud Run): publicar “pelo Firebase”
+
+Se queres publicar o site **com as rotas Flask (templates + /api + admin)** mantendo tudo, a abordagem mais simples é:
+
+- **Cloud Run**: corre o teu container Python/Flask
+- **Firebase Hosting**: fica como “frontend” (SSL/domínio) e faz **rewrite** de tudo para o Cloud Run
+
+Já existem no projeto:
+
+- `Dockerfile` (para Cloud Run)
+- `firebase.json` (rewrite para Cloud Run)
+- `.firebaserc` (associar o projeto Firebase)
+
+### 1) Criar/Escolher o projeto
+
+No Firebase Console escolhe o Project ID (ex: `meu-projeto`). Depois, no terminal:
+
+```bash
+npm i -g firebase-tools
+firebase login
+firebase use --add
+```
+
+Ou edita `.firebaserc` e troca `YOUR_FIREBASE_PROJECT_ID` pelo teu Project ID.
+
+### 2) Deploy do backend no Cloud Run
+
+No Google Cloud (mesmo projeto do Firebase), faz deploy do container.
+
+Exemplo (usa Dockerfile):
+
+```bash
+gcloud auth login
+gcloud config set project YOUR_FIREBASE_PROJECT_ID
+
+# cria uma imagem e faz deploy
+gcloud run deploy YOUR_CLOUD_RUN_SERVICE \
+    --source . \
+    --region us-central1 \
+    --allow-unauthenticated
+```
+
+Notas:
+
+- Em Cloud Run, o backend agora tenta **ADC** (`credentials.ApplicationDefault()`), por isso normalmente **não precisas** de `FIREBASE_SERVICE_ACCOUNT_JSON`.
+- Se quiseres forçar a credencial via JSON, continua a funcionar com `FIREBASE_SERVICE_ACCOUNT_JSON`.
+
+### 3) Apontar Firebase Hosting para o serviço
+
+Edita `firebase.json` e substitui:
+
+- `YOUR_CLOUD_RUN_SERVICE` pelo nome do serviço Cloud Run
+- `region` se necessário
+
+Depois:
+
+```bash
+firebase deploy --only hosting
+```
+
+### 4) Verificar
+
+- Abre `https://<teu-projeto>.web.app/api/health`
+- Confirma `firebase.ok=true` (ou pelo menos `sqlite.ok=true`)
+
 ## Verifying Firebase Connection
 
 Para verificar se Firebase está funcionando:

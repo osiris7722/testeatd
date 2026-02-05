@@ -138,6 +138,17 @@ vercel --prod
     - `SECRET_KEY`
     - `ADMIN_EMAILS` e/ou `ADMIN_EMAIL_DOMAIN` (recomendado)
 
+## 🌐 Deploy “pelo Firebase” (Firebase Hosting + Cloud Run)
+
+Se queres publicar o site mantendo o Flask (templates + `/api` + admin), usa:
+
+- **Cloud Run** para correr o backend (container)
+- **Firebase Hosting** para SSL/domínio e rewrite para o Cloud Run
+
+O projeto já inclui `Dockerfile`, `firebase.json` e `.firebaserc`.
+
+Passos detalhados: ver [FIREBASE_SETUP.md](FIREBASE_SETUP.md) na secção **Deploy (Firebase Hosting + Cloud Run)**.
+
 ## 📱 Acesso
 
 - **Página principal**: `/`

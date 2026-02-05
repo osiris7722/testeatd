@@ -18,9 +18,14 @@ app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'sua_chave_secreta_aqui_mude_para_producao')
 
 # Configurações
-# No Vercel (serverless) o filesystem do projeto é read-only; use /tmp para SQLite.
+# Em ambientes serverless/geridos (ex: Vercel/Cloud Run) é comum o filesystem do projeto ser read-only;
+# use /tmp para SQLite.
 IS_VERCEL = bool(os.environ.get('VERCEL'))
-DATABASE = os.environ.get('DATABASE_PATH', '/tmp/feedback.db' if IS_VERCEL else 'feedback.db')
+IS_CLOUD_RUN = bool(os.environ.get('K_SERVICE'))
+DATABASE = os.environ.get(
+    'DATABASE_PATH',
+    '/tmp/feedback.db' if (IS_VERCEL or IS_CLOUD_RUN) else 'feedback.db'
+)
 ADMIN_PASSWORD = 'admin123'  # Altere esta senha!
 
 # Admin via Firebase Auth
@@ -135,10 +140,16 @@ try:
                     firebase_cred_source = 'LOCAL_JSON_FILE'
 
         if not cred_obj:
-            msg = 'Credenciais Firebase não encontradas (defina FIREBASE_SERVICE_ACCOUNT_JSON ou configure um ficheiro via FIREBASE_SERVICE_ACCOUNT_FILE/GOOGLE_APPLICATION_CREDENTIALS).'
-            if os.environ.get('DEBUG_DIAGNOSTICS'):
-                msg += f" cwd={os.getcwd()} base_dir={base_dir} tried={firebase_cred_tried_paths}"
-            raise RuntimeError(msg)
+            # Em ambientes Google (ex: Cloud Run), pode usar Application Default Credentials (ADC)
+            # sem precisar de ficheiro/JSON.
+            try:
+                cred_obj = credentials.ApplicationDefault()
+                firebase_cred_source = 'APPLICATION_DEFAULT'
+            except Exception:
+                msg = 'Credenciais Firebase não encontradas (defina FIREBASE_SERVICE_ACCOUNT_JSON ou configure um ficheiro via FIREBASE_SERVICE_ACCOUNT_FILE/GOOGLE_APPLICATION_CREDENTIALS).'
+                if os.environ.get('DEBUG_DIAGNOSTICS'):
+                    msg += f" cwd={os.getcwd()} base_dir={base_dir} tried={firebase_cred_tried_paths}"
+                raise RuntimeError(msg)
 
         firebase_admin.initialize_app(cred_obj, {
             'databaseURL': os.environ.get('FIREBASE_DATABASE_URL', 'https://studio-7634777517-713ea.firebaseio.com')
