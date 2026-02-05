@@ -136,6 +136,22 @@ export ADMIN_EMAILS="admin1@exemplo.com,admin2@exemplo.com"
 export ADMIN_EMAIL_DOMAIN="exemplo.com"
 ```
 
+## Deploy (Vercel/Preview): Firestore Online
+
+Em deploys serverless (ex: Vercel), não contes que o ficheiro JSON esteja presente no runtime. Para garantir que o Firestore aparece **Online** no preview/produção, configura uma variável de ambiente com o conteúdo do service account:
+
+- `FIREBASE_SERVICE_ACCOUNT_JSON` = JSON completo do ficheiro `studio-7634777517-713ea-firebase-adminsdk-...json`
+
+Opcional:
+
+- `FIREBASE_DATABASE_URL` (se precisares de customizar)
+
+O backend tenta nesta ordem:
+
+1) `FIREBASE_SERVICE_ACCOUNT_JSON`
+2) `GOOGLE_APPLICATION_CREDENTIALS`
+3) ficheiro JSON na raiz do projeto (local)
+
 ## Verifying Firebase Connection
 
 Para verificar se Firebase está funcionando:

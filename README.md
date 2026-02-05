@@ -126,6 +126,18 @@ vercel --prod
 - Secret key
 - Admin password
 
+### Importante (Vercel + SQLite + Firebase)
+
+- **Vercel é serverless**: o filesystem do projeto é **read-only**. O SQLite passa a ser guardado em `/tmp/feedback.db` (ephemeral).
+    - Isto mantém o SQLite a funcionar (não removemos), mas os dados não são garantidos entre invocações.
+    - Para dados persistentes em produção, o “source of truth” deve ser o **Firestore**.
+
+- Para o Firestore ficar **Online no Preview/Production**, define no Vercel Environment Variables:
+    - `FIREBASE_SERVICE_ACCOUNT_JSON` = conteúdo JSON completo do service account
+    - (opcional) `FIREBASE_DATABASE_URL`
+    - `SECRET_KEY`
+    - `ADMIN_EMAILS` e/ou `ADMIN_EMAIL_DOMAIN` (recomendado)
+
 ## 📱 Acesso
 
 - **Página principal**: `/`

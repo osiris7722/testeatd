@@ -10,12 +10,17 @@ from openpyxl.styles import Font, PatternFill
 import firebase_admin
 from firebase_admin import credentials, firestore, auth
 import sys
+import json
 
 app = Flask(__name__)
-app.secret_key = 'sua_chave_secreta_aqui_mude_para_producao'
+
+# Em produção, configure SECRET_KEY como variável de ambiente.
+app.secret_key = os.environ.get('SECRET_KEY', 'sua_chave_secreta_aqui_mude_para_producao')
 
 # Configurações
-DATABASE = 'feedback.db'
+# No Vercel (serverless) o filesystem do projeto é read-only; use /tmp para SQLite.
+IS_VERCEL = bool(os.environ.get('VERCEL'))
+DATABASE = os.environ.get('DATABASE_PATH', '/tmp/feedback.db' if IS_VERCEL else 'feedback.db')
 ADMIN_PASSWORD = 'admin123'  # Altere esta senha!
 
 # Admin via Firebase Auth
@@ -62,9 +67,27 @@ def _is_admin_email_allowed(email: Optional[str]) -> bool:
 firebase_db = None
 try:
     if not firebase_admin._apps:
-        cred = credentials.Certificate('studio-7634777517-713ea-firebase-adminsdk-fbsvc-7669723ac0.json')
-        firebase_admin.initialize_app(cred, {
-            'databaseURL': 'https://studio-7634777517-713ea.firebaseio.com'
+        # Preferir credenciais por variável de ambiente em produção (Vercel/Preview)
+        # - FIREBASE_SERVICE_ACCOUNT_JSON: conteúdo JSON completo do service account
+        # - GOOGLE_APPLICATION_CREDENTIALS: path para um ficheiro com credenciais
+        env_json = os.environ.get('FIREBASE_SERVICE_ACCOUNT_JSON', '').strip()
+
+        cred_obj = None
+        if env_json:
+            cred_obj = credentials.Certificate(json.loads(env_json))
+        else:
+            file_path = os.environ.get(
+                'GOOGLE_APPLICATION_CREDENTIALS',
+                'studio-7634777517-713ea-firebase-adminsdk-fbsvc-7669723ac0.json'
+            )
+            if os.path.exists(file_path):
+                cred_obj = credentials.Certificate(file_path)
+
+        if not cred_obj:
+            raise RuntimeError('Credenciais Firebase não encontradas (defina FIREBASE_SERVICE_ACCOUNT_JSON ou inclua o ficheiro JSON).')
+
+        firebase_admin.initialize_app(cred_obj, {
+            'databaseURL': os.environ.get('FIREBASE_DATABASE_URL', 'https://studio-7634777517-713ea.firebaseio.com')
         })
         firebase_db = firestore.client()
         print("✓ Firebase inicializado com sucesso")
@@ -841,4 +864,6 @@ def get_available_dates():
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', '8000'))
-    app.run(host='127.0.0.1', port=port, debug=True)
+    host = '0.0.0.0' if os.environ.get('PORT') else '127.0.0.1'
+    debug = os.environ.get('FLASK_DEBUG', '1') not in ['0', 'false', 'False']
+    app.run(host=host, port=port, debug=debug)
