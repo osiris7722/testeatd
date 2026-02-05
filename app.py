@@ -65,26 +65,80 @@ def _is_admin_email_allowed(email: Optional[str]) -> bool:
 
 # Inicializar Firebase
 firebase_db = None
+firebase_init_error = None
+firebase_cred_source = None
+firebase_cred_tried_paths = []
 try:
     if not firebase_admin._apps:
         # Preferir credenciais por variável de ambiente em produção (Vercel/Preview)
         # - FIREBASE_SERVICE_ACCOUNT_JSON: conteúdo JSON completo do service account
         # - GOOGLE_APPLICATION_CREDENTIALS: path para um ficheiro com credenciais
+        # - FIREBASE_SERVICE_ACCOUNT_FILE: path alternativo para um ficheiro de credenciais
         env_json = os.environ.get('FIREBASE_SERVICE_ACCOUNT_JSON', '').strip()
 
         cred_obj = None
         if env_json:
             cred_obj = credentials.Certificate(json.loads(env_json))
+            firebase_cred_source = 'FIREBASE_SERVICE_ACCOUNT_JSON'
         else:
-            file_path = os.environ.get(
-                'GOOGLE_APPLICATION_CREDENTIALS',
-                'studio-7634777517-713ea-firebase-adminsdk-fbsvc-7669723ac0.json'
-            )
-            if os.path.exists(file_path):
-                cred_obj = credentials.Certificate(file_path)
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            default_filename = 'studio-7634777517-713ea-firebase-adminsdk-fbsvc-7669723ac0.json'
+
+            firebase_service_account_file = (os.environ.get('FIREBASE_SERVICE_ACCOUNT_FILE') or '').strip()
+            google_app_credentials = (os.environ.get('GOOGLE_APPLICATION_CREDENTIALS') or '').strip()
+
+            candidates = []
+            if firebase_service_account_file:
+                candidates.append(firebase_service_account_file)
+            if google_app_credentials:
+                candidates.append(google_app_credentials)
+
+            # Procura explícita em locais comuns (Replit pode ter cwd diferente)
+            candidates.extend([
+                os.path.join(base_dir, default_filename),
+                os.path.join(os.getcwd(), default_filename),
+                default_filename,
+            ])
+
+            chosen = None
+            firebase_cred_tried_paths = []
+            for p in candidates:
+                if not p:
+                    continue
+
+                # Registar tentativas (para diagnóstico)
+                if os.path.isabs(p):
+                    firebase_cred_tried_paths.append(p)
+                    if os.path.isfile(p):
+                        chosen = p
+                        break
+                else:
+                    p_cwd = os.path.join(os.getcwd(), p)
+                    firebase_cred_tried_paths.append(p_cwd)
+                    if os.path.isfile(p_cwd):
+                        chosen = p_cwd
+                        break
+
+                    p_base = os.path.join(base_dir, p)
+                    firebase_cred_tried_paths.append(p_base)
+                    if os.path.isfile(p_base):
+                        chosen = p_base
+                        break
+
+            if chosen:
+                cred_obj = credentials.Certificate(chosen)
+                if firebase_service_account_file:
+                    firebase_cred_source = 'FIREBASE_SERVICE_ACCOUNT_FILE'
+                elif google_app_credentials:
+                    firebase_cred_source = 'GOOGLE_APPLICATION_CREDENTIALS'
+                else:
+                    firebase_cred_source = 'LOCAL_JSON_FILE'
 
         if not cred_obj:
-            raise RuntimeError('Credenciais Firebase não encontradas (defina FIREBASE_SERVICE_ACCOUNT_JSON ou inclua o ficheiro JSON).')
+            msg = 'Credenciais Firebase não encontradas (defina FIREBASE_SERVICE_ACCOUNT_JSON ou configure um ficheiro via FIREBASE_SERVICE_ACCOUNT_FILE/GOOGLE_APPLICATION_CREDENTIALS).'
+            if os.environ.get('DEBUG_DIAGNOSTICS'):
+                msg += f" cwd={os.getcwd()} base_dir={base_dir} tried={firebase_cred_tried_paths}"
+            raise RuntimeError(msg)
 
         firebase_admin.initialize_app(cred_obj, {
             'databaseURL': os.environ.get('FIREBASE_DATABASE_URL', 'https://studio-7634777517-713ea.firebaseio.com')
@@ -92,6 +146,7 @@ try:
         firebase_db = firestore.client()
         print("✓ Firebase inicializado com sucesso")
 except Exception as e:
+    firebase_init_error = str(e)
     print(f"⚠ Aviso: Firebase não está disponível: {e}")
     print("  A aplicação continuará funcionando apenas com SQLite")
 
@@ -141,7 +196,9 @@ def health_check():
 
     firebase_ok = bool(firebase_db and firebase_admin._apps)
 
-    return jsonify({
+    diagnostics_enabled = bool(os.environ.get('DEBUG_DIAGNOSTICS'))
+
+    payload = {
         'ok': sqlite_ok,
         'time': datetime.now().isoformat(),
         'python': sys.version.split(' ')[0],
@@ -155,8 +212,19 @@ def health_check():
             'firestoreAvailable': bool(firebase_db),
             'ok': firebase_ok,
             'projectId': FIREBASE_WEB_CONFIG.get('projectId') or None,
+            'credSource': firebase_cred_source,
+            'error': firebase_init_error,
         }
-    })
+    }
+
+    if diagnostics_enabled:
+        payload['firebase']['triedPaths'] = firebase_cred_tried_paths
+        payload['server'] = {
+            'cwd': os.getcwd(),
+            'baseDir': os.path.dirname(os.path.abspath(__file__)),
+        }
+
+    return jsonify(payload)
 
 
 @app.route('/api/public/summary', methods=['GET'])

@@ -16,3 +16,7 @@ dist/
 build/
 *.egg-info/
 studio-7634777517-713ea-firebase-adminsdk-fbsvc-7669723ac0.json
+
+# macOS artifacts
+.DS_Store
+static/.DS_Store

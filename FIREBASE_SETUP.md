@@ -138,9 +138,14 @@ export ADMIN_EMAIL_DOMAIN="exemplo.com"
 
 ## Deploy (Vercel/Preview): Firestore Online
 
-Em deploys serverless (ex: Vercel), não contes que o ficheiro JSON esteja presente no runtime. Para garantir que o Firestore aparece **Online** no preview/produção, configura uma variável de ambiente com o conteúdo do service account:
+Em deploys (ex: Vercel/Replit), não contes que o ficheiro JSON esteja presente no runtime (ou que o *working directory* seja a raiz do projeto). Para garantir que o Firestore aparece **Online** no preview/produção, configura uma variável de ambiente com o conteúdo do service account:
 
 - `FIREBASE_SERVICE_ACCOUNT_JSON` = JSON completo do ficheiro `studio-7634777517-713ea-firebase-adminsdk-...json`
+
+Alternativa (quando preferires apontar para um ficheiro no runtime):
+
+- `FIREBASE_SERVICE_ACCOUNT_FILE` = path para o ficheiro JSON
+- ou `GOOGLE_APPLICATION_CREDENTIALS` = path para o ficheiro JSON
 
 Opcional:
 
@@ -149,8 +154,13 @@ Opcional:
 O backend tenta nesta ordem:
 
 1) `FIREBASE_SERVICE_ACCOUNT_JSON`
-2) `GOOGLE_APPLICATION_CREDENTIALS`
-3) ficheiro JSON na raiz do projeto (local)
+2) `FIREBASE_SERVICE_ACCOUNT_FILE`
+3) `GOOGLE_APPLICATION_CREDENTIALS`
+4) ficheiro JSON incluído junto do `app.py` (local)
+
+Dica de diagnóstico:
+
+- Define `DEBUG_DIAGNOSTICS=1` e abre `GET /api/health` para veres `firebase.credSource`, `firebase.error` e `firebase.triedPaths`.
 
 ## Verifying Firebase Connection
 
@@ -191,7 +201,6 @@ Para verificar se Firebase está funcionando:
 
 - `requirements.txt` - Adicionado firebase-admin
 - `app.py` - Integração Firebase + tratamento de erros
-- `config.py` - Novo ficheiro com configurações (optional)
 
 ---
 
