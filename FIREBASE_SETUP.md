@@ -2,9 +2,9 @@
 
 ## O que foi feito
 
-✓ **Firebase + SQLite Integrado**: A aplicação agora guarda dados em ambos os lugares:
-  - **SQLite**: Armazenamento local rápido e confiável
-  - **Firebase Firestore**: Sincronização em tempo real e backup na nuvem
+✓ **Firebase Firestore (persistência principal)**: A aplicação guarda dados no **Firestore**.
+
+Nota: o projeto foi ajustado para funcionar de forma fiável em **serverless (Vercel)** sem depender de SQLite.
 
 ## Configuração
 
@@ -48,9 +48,8 @@ Firestore
 ### Fluxo de Dados
 
 1. **Utilizador submete feedback** → API `/api/feedback`
-2. **Dados guardados no SQLite** → Armazenamento local imediato
-3. **Dados enviados para Firebase** → Sincronização na nuvem
-4. **Se Firebase falhar** → Aplicação continua a funcionar normalmente com SQLite
+2. **Dados guardados no Firestore** → Persistência na nuvem
+3. **Dashboard/exports** lêem do Firestore
 
 ### Código-chave
 
@@ -68,19 +67,9 @@ except Exception as e:
     print(f"⚠ Firebase não está disponível: {e}")
 ```
 
-**Guardar dados em ambos os lugares**:
+**Guardar dados no Firestore**:
 ```python
-# SQLite
-conn = get_db()
-cursor = conn.execute(
-    'INSERT INTO feedback (grau_satisfacao, data, hora, dia_semana) VALUES (?, ?, ?, ?)',
-    (grau_satisfacao, data_str, hora_str, dia_semana)
-)
-feedback_id = cursor.lastrowid
-
-# Firebase
-if firebase_db:
-    firebase_db.collection('feedback').document(f'feedback_{feedback_id}').set(feedback_data)
+feedback_id = _firestore_create_feedback_primary(feedback_data)
 ```
 
 ## Variáveis de Ambiente (Opcional)
@@ -138,41 +127,17 @@ export ADMIN_EMAIL_DOMAIN="exemplo.com"
 
 ## Deploy no Vercel (importante)
 
-### SQLite no Vercel
+### Firestore-only no Vercel (recomendado)
 
-No Vercel (serverless), o filesystem do código é **read-only**. Por isso o SQLite **não pode** gravar em `feedback.db` na raiz.
+Para garantir que o site funciona **com persistência real** no Vercel (serverless), o backend está agora em modo **Firestore-only** por defeito no deploy.
 
-Foi ajustado para usar automaticamente:
+Isto significa:
 
-- `'/tmp/feedback.db'` quando `VERCEL=1`
+- `POST /api/feedback` grava diretamente no **Firestore** e devolve um `id` sequencial.
+- O dashboard (`/api/admin/*`), histórico e exports lêem do **Firestore**.
+- Não existe dependência de SQLite no runtime do Vercel.
 
-Podes também forçar com:
-
-```bash
-export SQLITE_PATH="/tmp/feedback.db"
-```
-
-Nota: `'/tmp'` é **ephemeral** (pode limpar a cada cold start). Para dados persistentes em produção, o ideal é considerar o Firebase/Firestore como fonte principal (a app já sincroniza para lá).
-
-### Persistência total no deploy (Firestore como primário)
-
-Para ter **persistência total no Vercel**, a app foi ajustada para usar **Firestore como fonte de verdade** quando:
-
-- `VERCEL=1` (automático no deploy), ou
-- `FIRESTORE_PRIMARY=1`
-
-Neste modo:
-
-- `POST /api/feedback` **cria o registo diretamente no Firestore** e devolve um `id` sequencial.
-- O dashboard (`/api/admin/*`) **lê do Firestore**, não do SQLite.
-- O SQLite pode existir apenas como cache ephemeral em `/tmp` (opcional).
-
-Se o Firestore **não** estiver disponível (ex.: `FIREBASE_SERVICE_ACCOUNT_JSON` não definido no Vercel), a app **não falha**: entra em `sqlite-fallback` (continua a funcionar, mas a persistência no deploy passa a ser ephemeral).
-
-Podes confirmar em `/api/health`:
-
-- `storageMode: "firestore-primary"` (persistência total ativa)
-- `storageMode: "sqlite-fallback"` (Firestore indisponível; site funciona na mesma)
+Se o Firestore não inicializar, a API devolve `503` com `details` (não deve crashar a função). Para o site funcionar completamente, define as env vars abaixo.
 
 #### Coleções/Docs usados pelo modo persistente
 
@@ -203,7 +168,22 @@ Opcionais:
 ### Variáveis de ambiente recomendadas no Vercel
 
 - `SECRET_KEY` (obrigatório para sessões de admin)
-- `FIREBASE_SERVICE_ACCOUNT_JSON` (recomendado em vez de subir o ficheiro `.json` no repo)
+- `FIREBASE_SERVICE_ACCOUNT_JSON` (obrigatório para o modo Firestore-only)
+
+Alternativa (se tiveres problemas a colar JSON no Vercel):
+
+- `FIREBASE_SERVICE_ACCOUNT_JSON_B64` (o mesmo JSON mas em base64)
+
+Exemplo para gerar no macOS:
+
+```bash
+python3 - <<'PY'
+import base64, json
+path = 'studio-7634777517-713ea-firebase-adminsdk-fbsvc-7669723ac0.json'
+data = open(path,'rb').read()
+print(base64.b64encode(data).decode('utf-8'))
+PY
+```
 - `ADMIN_EMAILS` ou `ADMIN_EMAIL_DOMAIN` (recomendado)
 
 Também podes (opcional) definir o Firebase Web config via env vars:
@@ -218,9 +198,10 @@ Depois do deploy, testa:
 
 Se isto responder, a função no Vercel está a ser invocada corretamente.
 
-Para confirmar que o modo persistente está ativo, o `/api/health` devolve também:
+Para confirmar que o Firestore está mesmo inicializado, o `/api/health` devolve também:
 
-- `storageMode: "firestore-primary"`
+- `firebase.ok: true`
+- `storageMode: "firestore-only"`
 
 ## Verifying Firebase Connection
 
