@@ -116,6 +116,11 @@ def _firestore_enabled() -> bool:
     return bool(firebase_db and firebase_admin._apps)
 
 
+def _firestore_primary_effective() -> bool:
+    """True quando queremos Firestore como primário E ele está realmente disponível."""
+    return bool(FIRESTORE_PRIMARY and _firestore_enabled())
+
+
 def _firestore_client():
     if not _firestore_enabled():
         raise RuntimeError('Firestore não disponível (firebase_db=None)')
@@ -437,8 +442,13 @@ def health_check():
         sqlite_error = str(e)
 
     firebase_ok = _firestore_enabled()
-    storage_mode = 'firestore-primary' if FIRESTORE_PRIMARY else 'sqlite-primary'
-    ok = firebase_ok if FIRESTORE_PRIMARY else sqlite_ok
+
+    if FIRESTORE_PRIMARY and not firebase_ok:
+        storage_mode = 'sqlite-fallback'
+        ok = sqlite_ok
+    else:
+        storage_mode = 'firestore-primary' if FIRESTORE_PRIMARY else 'sqlite-primary'
+        ok = firebase_ok if FIRESTORE_PRIMARY else sqlite_ok
 
     return jsonify({
         'ok': ok,
@@ -465,9 +475,7 @@ def public_summary():
     try:
         hoje = datetime.now().strftime('%Y-%m-%d')
 
-        if FIRESTORE_PRIMARY:
-            if not _firestore_enabled():
-                return jsonify({'error': 'Firestore não disponível'}), 503
+        if _firestore_primary_effective():
 
             stats = _firestore_get_overall_stats_doc()
             daily = (_fs_daily_doc(hoje).get().to_dict() or {})
@@ -554,8 +562,25 @@ def registrar_feedback():
 
         # Em deploy (FIRESTORE_PRIMARY/VERCEL), o Firestore é a fonte de verdade.
         if FIRESTORE_PRIMARY:
+            # Se o Firestore não estiver disponível (ex.: deploy sem credenciais),
+            # a app deve continuar a funcionar com SQLite (mesmo que seja ephemeral em serverless).
             if not _firestore_enabled():
-                return jsonify({'error': 'Firestore não disponível no modo persistente'}), 503
+                conn = get_db()
+                cursor = conn.execute(
+                    'INSERT INTO feedback (grau_satisfacao, data, hora, dia_semana) VALUES (?, ?, ?, ?)',
+                    (grau_satisfacao, data_str, hora_str, dia_semana)
+                )
+                conn.commit()
+                feedback_id = cursor.lastrowid
+                conn.close()
+
+                feedback_data['id'] = feedback_id
+                return jsonify({
+                    'success': True,
+                    'message': 'Obrigado pelo seu feedback! (modo offline) ',
+                    'id': feedback_id,
+                    'firebaseAvailable': False,
+                })
 
             feedback_id = _firestore_create_feedback_primary(feedback_data)
             feedback_data['id'] = feedback_id
@@ -576,7 +601,8 @@ def registrar_feedback():
             return jsonify({
                 'success': True,
                 'message': 'Obrigado pelo seu feedback!',
-                'id': feedback_id
+                'id': feedback_id,
+                'firebaseAvailable': True,
             })
 
         # Modo local/normal: SQLite primeiro, depois sincroniza Firestore
@@ -710,9 +736,7 @@ def get_stats():
         return jsonify({'error': 'Não autorizado'}), 401
     
     try:
-        if FIRESTORE_PRIMARY:
-            if not _firestore_enabled():
-                return jsonify({'error': 'Firestore não disponível'}), 503
+        if _firestore_primary_effective():
 
             stats = _firestore_get_overall_stats_doc()
             total_geral = int(stats.get('total') or 0)
@@ -779,9 +803,7 @@ def get_daily_stats():
     try:
         data_filtro = request.args.get('data')
 
-        if FIRESTORE_PRIMARY:
-            if not _firestore_enabled():
-                return jsonify({'error': 'Firestore não disponível'}), 503
+        if _firestore_primary_effective():
 
             date_str = data_filtro or datetime.now().strftime('%Y-%m-%d')
             daily = (_fs_daily_doc(date_str).get().to_dict() or {})
@@ -836,9 +858,7 @@ def get_comparison_stats():
         if not all([data1_inicio, data1_fim, data2_inicio, data2_fim]):
             return jsonify({'error': 'Datas inválidas'}), 400
         
-        if FIRESTORE_PRIMARY:
-            if not _firestore_enabled():
-                return jsonify({'error': 'Firestore não disponível'}), 503
+        if _firestore_primary_effective():
 
             def _sum_period(start: str, end: str):
                 totals = {'muito_satisfeito': 0, 'satisfeito': 0, 'insatisfeito': 0, 'total': 0}
@@ -944,9 +964,7 @@ def get_historico():
         data_inicio = (request.args.get('data_inicio') or '').strip()
         data_fim = (request.args.get('data_fim') or '').strip()
         
-        if FIRESTORE_PRIMARY:
-            if not _firestore_enabled():
-                return jsonify({'error': 'Firestore não disponível'}), 503
+        if _firestore_primary_effective():
 
             # Pesquisa por ID exato
             if q.isdigit():
@@ -1080,9 +1098,7 @@ def export_csv():
         data_inicio = request.args.get('data_inicio')
         data_fim = request.args.get('data_fim')
         
-        if FIRESTORE_PRIMARY:
-            if not _firestore_enabled():
-                return jsonify({'error': 'Firestore não disponível'}), 503
+        if _firestore_primary_effective():
 
             query = _fs_feedback_col()
             if data_inicio:
@@ -1185,9 +1201,7 @@ def export_csv_plain():
         data_inicio = request.args.get('data_inicio')
         data_fim = request.args.get('data_fim')
 
-        if FIRESTORE_PRIMARY:
-            if not _firestore_enabled():
-                return jsonify({'error': 'Firestore não disponível'}), 503
+        if _firestore_primary_effective():
             query = _fs_feedback_col()
             if data_inicio:
                 query = query.where('data', '>=', data_inicio)
@@ -1251,9 +1265,7 @@ def admin_system():
         return jsonify({'error': 'Não autorizado'}), 401
 
     try:
-        if FIRESTORE_PRIMARY:
-            if not _firestore_enabled():
-                return jsonify({'error': 'Firestore não disponível'}), 503
+        if _firestore_primary_effective():
 
             stats = _firestore_get_overall_stats_doc()
             total = int(stats.get('total') or 0)
@@ -1327,9 +1339,7 @@ def export_txt():
         data_inicio = request.args.get('data_inicio')
         data_fim = request.args.get('data_fim')
         
-        if FIRESTORE_PRIMARY:
-            if not _firestore_enabled():
-                return jsonify({'error': 'Firestore não disponível'}), 503
+        if _firestore_primary_effective():
             query = _fs_feedback_col()
             if data_inicio:
                 query = query.where('data', '>=', data_inicio)
@@ -1411,9 +1421,7 @@ def get_available_dates():
         return jsonify({'error': 'Não autorizado'}), 401
     
     try:
-        if FIRESTORE_PRIMARY:
-            if not _firestore_enabled():
-                return jsonify({'error': 'Firestore não disponível'}), 503
+        if _firestore_primary_effective():
 
             q = _firestore_client().collection(FIRESTORE_DAILY_COLLECTION).order_by('date', direction=firestore.Query.DESCENDING)
             dates = []

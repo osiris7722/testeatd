@@ -167,6 +167,13 @@ Neste modo:
 - O dashboard (`/api/admin/*`) **lê do Firestore**, não do SQLite.
 - O SQLite pode existir apenas como cache ephemeral em `/tmp` (opcional).
 
+Se o Firestore **não** estiver disponível (ex.: `FIREBASE_SERVICE_ACCOUNT_JSON` não definido no Vercel), a app **não falha**: entra em `sqlite-fallback` (continua a funcionar, mas a persistência no deploy passa a ser ephemeral).
+
+Podes confirmar em `/api/health`:
+
+- `storageMode: "firestore-primary"` (persistência total ativa)
+- `storageMode: "sqlite-fallback"` (Firestore indisponível; site funciona na mesma)
+
 #### Coleções/Docs usados pelo modo persistente
 
 - Coleção `feedback` (documentos `feedback_<id>`) com campos: `id`, `grau_satisfacao`, `data`, `hora`, `dia_semana`, `timestamp` e `createdAt`.
