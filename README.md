@@ -1,6 +1,6 @@
 # Sistema de Feedback de Satisfação
 
-Aplicação web full-stack para coleta e análise de feedback de satisfação de usuários.
+Aplicação web full-stack para coleta e análise de feedback de satisfação de usuários, **agora com Firebase integrado**.
 
 ## 🚀 Funcionalidades
 
@@ -11,11 +11,13 @@ Aplicação web full-stack para coleta e análise de feedback de satisfação de
 - Bloqueio de múltiplos cliques consecutivos (timeout de 3 segundos)
 - Registro automático de data, hora e dia da semana
 
-### Base de Dados
-- SQLite com criação automática
-- Campos: ID, grau de satisfação, data, hora, dia da semana
-- Persistência automática de dados
-- Consultas agregadas e filtros
+### Armazenamento de Dados
+**Híbrido (SQLite + Firebase):**
+- **SQLite**: Armazenamento local rápido e confiável
+- **Firebase Firestore**: Sincronização em nuvem e backup automático
+- Criação automática de tabelas/coleções
+- Campos: ID, grau de satisfação, data, hora, dia da semana, timestamp
+- Persistência automática em ambos os locais
 
 ### Área Administrativa
 - URL personalizada: `/admin_rocha`
@@ -48,7 +50,7 @@ python3 -m venv venv
 source venv/bin/activate  # No Windows: venv\Scripts\activate
 ```
 
-### 3. Instalar dependências
+### 3. Instalar dependências (inclui Firebase)
 ```bash
 pip install -r requirements.txt
 ```
@@ -58,16 +60,44 @@ pip install -r requirements.txt
 python app.py
 ```
 
-A aplicação estará disponível em `http://localhost:5000`
+A aplicação estará disponível em `http://localhost:8000`
+
+## 🔥 Firebase Integration
+
+A aplicação agora sincroniza dados com Firebase Firestore:
+
+- ✅ **SQLite**: Armazenamento local (sempre funciona)
+- ✅ **Firebase**: Sincronização em nuvem
+- ✅ **Redundância**: Dados em dois locais para segurança
+- ✅ **Offline-first**: Funciona sem internet
+
+**Ficheiros de configuração Firebase:**
+- `studio-7634777517-713ea-firebase-adminsdk-fbsvc-7669723ac0.json` - Credenciais
+
+**Documentação:**
+- [FIREBASE_RESUMO.md](FIREBASE_RESUMO.md) - Resumo executivo
+- [FIREBASE_SETUP.md](FIREBASE_SETUP.md) - Configuração detalhada
+- [EXEMPLO_FLUXO.py](EXEMPLO_FLUXO.py) - Exemplos de fluxo
+
+**Testar integração:**
+```bash
+python3 test_firebase.py
+```
 
 ## 🔒 Segurança
 
-**IMPORTANTE**: Antes do deploy, altere a senha do admin em [app.py](app.py):
+**IMPORTANTE**: Antes do deploy, altere a senha do admin e Firebase:
 
 ```python
+# Em app.py ou variáveis de ambiente
 ADMIN_PASSWORD = 'sua_senha_segura_aqui'
 app.secret_key = 'sua_chave_secreta_aqui'
 ```
+
+**Firebase:**
+- Credenciais estão no arquivo `.json` (não comitar)
+- Configurar regras de segurança no Firebase Console
+- Usar variáveis de ambiente em produção
 
 ## 🌐 Deploy no Vercel
 
@@ -91,9 +121,10 @@ vercel
 vercel --prod
 ```
 
-**Nota**: O Vercel não é ideal para aplicações com SQLite em produção. Para produção real, considere:
-- PostgreSQL ou MySQL para banco de dados
-- Heroku, Railway ou PythonAnywhere para hospedagem
+**Nota**: Para produção com Firebase, configure variáveis de ambiente no Vercel:
+- Firebase credentials (se necessário)
+- Secret key
+- Admin password
 
 ## 📱 Acesso
 
@@ -134,14 +165,20 @@ A interface é totalmente responsiva e adaptável a:
 
 ```
 testeatd/
-├── app.py                 # Backend Flask
-├── requirements.txt       # Dependências Python
-├── vercel.json           # Configuração Vercel
-├── templates/            # Templates HTML
+├── app.py                         # Backend Flask (com Firebase)
+├── config.py                      # Configurações (novo)
+├── requirements.txt               # Dependências Python
+├── test_firebase.py               # Testes Firebase (novo)
+├── vercel.json                    # Configuração Vercel
+├── FIREBASE_RESUMO.md             # Resumo Firebase (novo)
+├── FIREBASE_SETUP.md              # Setup Firebase (novo)
+├── EXEMPLO_FLUXO.py               # Exemplos de fluxo (novo)
+├── studio-7634777517-713ea-firebase-adminsdk-fbsvc-7669723ac0.json  # Credenciais
+├── templates/                     # Templates HTML
 │   ├── index.html
 │   ├── admin_login.html
 │   └── admin_dashboard.html
-└── static/               # Arquivos estáticos
+└── static/                        # Arquivos estáticos
     ├── css/
     │   ├── style.css
     │   └── admin.css

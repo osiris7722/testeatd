@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Modo TV - Dashboard</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/admin.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/tv.css') }}">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body class="tv-body">
+    <div class="tv-wrap">
+        <header class="tv-header">
+            <div class="tv-title">
+                <div class="tv-h1">📺 Modo TV</div>
+                <div class="tv-sub">Resumo em tempo real · Atualiza automaticamente</div>
+            </div>
+            <div class="tv-right">
+                <div class="tv-clock" id="tv-clock">—</div>
+                {% if admin_email %}
+                <div class="tv-admin" title="Conta autenticada">{{ admin_email }}</div>
+                {% endif %}
+                <button class="tv-btn" id="tv-fullscreen" type="button">⛶</button>
+                <button class="tv-btn" id="tv-refresh" type="button">⟳</button>
+                <a class="tv-btn tv-link" href="{{ url_for('admin_dashboard') }}" title="Voltar">↩</a>
+            </div>
+        </header>
+
+        <main class="tv-main">
+            <section class="tv-kpis">
+                <div class="tv-kpi">
+                    <div class="k">Hoje</div>
+                    <div class="v" id="kpi-today-total">—</div>
+                    <div class="s" id="kpi-today-breakdown">—</div>
+                </div>
+                <div class="tv-kpi">
+                    <div class="k">Total</div>
+                    <div class="v" id="kpi-total">—</div>
+                    <div class="s">feedbacks</div>
+                </div>
+                <div class="tv-kpi">
+                    <div class="k">Firebase</div>
+                    <div class="v" id="kpi-firebase">—</div>
+                    <div class="s" id="kpi-project">—</div>
+                </div>
+                <div class="tv-kpi">
+                    <div class="k">Último ID</div>
+                    <div class="v" id="kpi-last-id">—</div>
+                    <div class="s" id="kpi-db">—</div>
+                </div>
+            </section>
+
+            <section class="tv-charts">
+                <div class="tv-panel">
+                    <div class="tv-panel-title">Distribuição (Total)</div>
+                    <canvas id="tv-bar"></canvas>
+                </div>
+                <div class="tv-panel">
+                    <div class="tv-panel-title">Percentagens (Total)</div>
+                    <canvas id="tv-pie"></canvas>
+                </div>
+            </section>
+
+            <section class="tv-footer">
+                <div class="tv-pill" id="tv-status">A ligar…</div>
+                <div class="tv-note">Dica: carrega em ⛶ para ecrã inteiro. O navegador pode bloquear o wake-lock.</div>
+            </section>
+        </main>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/tv.js') }}"></script>
+</body>
+</html>

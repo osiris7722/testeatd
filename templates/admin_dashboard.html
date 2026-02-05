@@ -11,10 +11,57 @@
     <div class="dashboard-container">
         <header class="dashboard-header">
             <h1>📊 Dashboard Administrativo</h1>
-            <a href="{{ url_for('admin_logout') }}" class="logout-btn">Sair</a>
+            <div class="header-actions">
+                {% if admin_email %}
+                <div class="admin-ident" title="Conta autenticada">
+                    <span class="admin-dot"></span>
+                    <span class="admin-email">{{ admin_email }}</span>
+                </div>
+                {% endif %}
+
+                <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Alternar tema">
+                    🌙
+                </button>
+                <a href="{{ url_for('admin_tv') }}" class="logout-btn" style="text-decoration:none;">Modo TV</a>
+                <a href="{{ url_for('admin_logout') }}" class="logout-btn">Sair</a>
+            </div>
         </header>
         
         <div class="dashboard-content">
+            <!-- Sistema / Status -->
+            <section class="system-section">
+                <h2>Sistema</h2>
+                <div class="system-grid">
+                    <div class="system-card">
+                        <div class="k">Servidor</div>
+                        <div class="v" id="sys-time">—</div>
+                        <div class="s" id="sys-python">—</div>
+                    </div>
+                    <div class="system-card">
+                        <div class="k">SQLite</div>
+                        <div class="v" id="sys-total">—</div>
+                        <div class="s" id="sys-db">—</div>
+                    </div>
+                    <div class="system-card">
+                        <div class="k">Firebase</div>
+                        <div class="v" id="sys-firebase">—</div>
+                        <div class="s" id="sys-project">—</div>
+                    </div>
+                    <div class="system-card">
+                        <div class="k">Último ID</div>
+                        <div class="v" id="sys-last-id">—</div>
+                        <div class="s">último registo</div>
+                    </div>
+                </div>
+                <div class="system-actions">
+                    <button type="button" class="secondary-btn" id="btn-refresh-system">Atualizar</button>
+                    <label class="toggle">
+                        <input type="checkbox" id="auto-refresh">
+                        <span>Auto atualizar (30s)</span>
+                    </label>
+                </div>
+            </section>
+
             <!-- Estatísticas Gerais -->
             <section class="stats-section">
                 <h2>Estatísticas Gerais</h2>
@@ -72,6 +119,90 @@
                 </div>
             </section>
             
+            <!-- Comparação entre Períodos -->
+            <section class="comparison-section">
+                <h2>Comparação entre Períodos</h2>
+                <div class="comparison-controls">
+                    <div class="period-group">
+                        <h4>Período 1</h4>
+                        <div class="date-range-compact">
+                            <div class="date-input-group">
+                                <label for="comp-data1-inicio">De:</label>
+                                <input type="date" id="comp-data1-inicio">
+                            </div>
+                            <div class="date-input-group">
+                                <label for="comp-data1-fim">Até:</label>
+                                <input type="date" id="comp-data1-fim">
+                            </div>
+                        </div>
+                    </div>
+                    <div class="period-group">
+                        <h4>Período 2</h4>
+                        <div class="date-range-compact">
+                            <div class="date-input-group">
+                                <label for="comp-data2-inicio">De:</label>
+                                <input type="date" id="comp-data2-inicio">
+                            </div>
+                            <div class="date-input-group">
+                                <label for="comp-data2-fim">Até:</label>
+                                <input type="date" id="comp-data2-fim">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <button class="comparison-btn" id="btn-comparar">📊 Comparar Períodos</button>
+                <div class="comparison-results" id="comparison-results" style="display:none;">
+                    <div class="comparison-grid">
+                        <div class="comparison-item">
+                            <h4>Muito Satisfeito</h4>
+                            <div class="comparison-values">
+                                <div class="comp-value">
+                                    <span class="label">Período 1:</span>
+                                    <span id="comp-ms-p1">0</span>
+                                </div>
+                                <div class="comp-value">
+                                    <span class="label">Período 2:</span>
+                                    <span id="comp-ms-p2">0</span>
+                                </div>
+                                <div class="comp-value variation" id="comp-ms-var"></div>
+                            </div>
+                        </div>
+                        <div class="comparison-item">
+                            <h4>Satisfeito</h4>
+                            <div class="comparison-values">
+                                <div class="comp-value">
+                                    <span class="label">Período 1:</span>
+                                    <span id="comp-s-p1">0</span>
+                                </div>
+                                <div class="comp-value">
+                                    <span class="label">Período 2:</span>
+                                    <span id="comp-s-p2">0</span>
+                                </div>
+                                <div class="comp-value variation" id="comp-s-var"></div>
+                            </div>
+                        </div>
+                        <div class="comparison-item">
+                            <h4>Insatisfeito</h4>
+                            <div class="comparison-values">
+                                <div class="comp-value">
+                                    <span class="label">Período 1:</span>
+                                    <span id="comp-i-p1">0</span>
+                                </div>
+                                <div class="comp-value">
+                                    <span class="label">Período 2:</span>
+                                    <span id="comp-i-p2">0</span>
+                                </div>
+                                <div class="comp-value variation" id="comp-i-var"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="chart-container">
+                        <h3>Gráfico Comparativo</h3>
+                        <canvas id="comparisonChart"></canvas>
+                    </div>
+                </div>
+            </section>
+            
             <!-- Análise Temporal -->
             <section class="temporal-section">
                 <h2>Análise Temporal</h2>
@@ -104,7 +235,8 @@
                         </div>
                     </div>
                     <div class="export-buttons">
-                        <button class="export-btn csv" id="export-csv">📊 Exportar CSV</button>
+                        <button class="export-btn csv" id="export-csv">📊 Exportar Excel (XLSX)</button>
+                        <button class="export-btn csv" id="export-csv-plain">🧾 Exportar CSV</button>
                         <button class="export-btn txt" id="export-txt">📄 Exportar TXT</button>
                     </div>
                 </div>
@@ -113,6 +245,35 @@
             <!-- Histórico -->
             <section class="history-section">
                 <h2>Histórico de Feedbacks</h2>
+                <div class="history-controls">
+                    <div class="history-filters">
+                        <div class="date-input-group">
+                            <label for="history-search-id">ID:</label>
+                            <input type="number" id="history-search-id" placeholder="Ex: 12" min="1">
+                        </div>
+                        <div class="date-input-group">
+                            <label for="history-filter-grau">Satisfação:</label>
+                            <select id="history-filter-grau">
+                                <option value="">Todas</option>
+                                <option value="muito_satisfeito">Muito Satisfeito</option>
+                                <option value="satisfeito">Satisfeito</option>
+                                <option value="insatisfeito">Insatisfeito</option>
+                            </select>
+                        </div>
+                        <div class="date-input-group">
+                            <label for="history-date-inicio">De:</label>
+                            <input type="date" id="history-date-inicio">
+                        </div>
+                        <div class="date-input-group">
+                            <label for="history-date-fim">Até:</label>
+                            <input type="date" id="history-date-fim">
+                        </div>
+                    </div>
+                    <div class="history-actions">
+                        <button class="comparison-btn" id="history-apply">Aplicar filtros</button>
+                        <button class="secondary-btn" id="history-clear">Limpar</button>
+                    </div>
+                </div>
                 <div class="table-container">
                     <table class="history-table">
                         <thead>
@@ -140,6 +301,23 @@
         </div>
     </div>
     
+    <script>
+        (function() {
+            const saved = localStorage.getItem('theme') || 'light';
+            document.documentElement.dataset.theme = saved;
+            const btn = document.getElementById('theme-toggle');
+            if (btn) {
+                const setIcon = () => btn.textContent = (document.documentElement.dataset.theme === 'dark') ? '☀️' : '🌙';
+                setIcon();
+                btn.addEventListener('click', () => {
+                    const next = (document.documentElement.dataset.theme === 'dark') ? 'light' : 'dark';
+                    document.documentElement.dataset.theme = next;
+                    localStorage.setItem('theme', next);
+                    setIcon();
+                });
+            }
+        })();
+    </script>
     <script src="{{ url_for('static', filename='js/admin.js') }}"></script>
 </body>
 </html>

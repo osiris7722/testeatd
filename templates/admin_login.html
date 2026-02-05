@@ -11,18 +11,40 @@
         <div class="login-box">
             <h1>🔒 Área Administrativa</h1>
             <p class="subtitle">Faça login para acessar o painel</p>
+
+            <div class="login-hint" id="login-hint" style="display:none;"></div>
             
-            <form method="POST" action="{{ url_for('admin_login') }}">
+            <form id="firebase-login-form" autocomplete="on">
                 <div class="form-group">
-                    <label for="password">Senha:</label>
+                    <label for="email">Email:</label>
+                    <input
+                        type="email"
+                        id="email"
+                        name="email"
+                        required
+                        autofocus
+                        placeholder="email@exemplo.com"
+                    >
+                </div>
+
+                <div class="form-group">
+                    <label for="password">Senha (Firebase):</label>
                     <input 
                         type="password" 
                         id="password" 
                         name="password" 
                         required 
-                        autofocus
-                        placeholder="Digite a senha"
+                        placeholder="Digite a sua senha"
                     >
+                </div>
+
+                <div class="form-actions">
+                    <button type="submit" class="login-btn" id="login-btn">
+                        Entrar
+                    </button>
+                    <button type="button" class="secondary-btn" id="logout-btn" style="display:none;">
+                        Terminar sessão
+                    </button>
                 </div>
                 
                 {% if error %}
@@ -30,8 +52,10 @@
                     {{ error }}
                 </div>
                 {% endif %}
+
+                <div class="error-message" id="error-message" style="display:none;"></div>
+                <div class="success-message" id="success-message" style="display:none;"></div>
                 
-                <button type="submit" class="login-btn">Entrar</button>
             </form>
             
             <div class="back-link">
@@ -39,5 +63,132 @@
             </div>
         </div>
     </div>
+
+    <script type="module">
+        import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.8.1/firebase-app.js';
+        import {
+            getAuth,
+            signInWithEmailAndPassword,
+            onAuthStateChanged,
+            signOut
+        } from 'https://www.gstatic.com/firebasejs/10.8.1/firebase-auth.js';
+
+        const firebaseConfig = {{ (firebase_web_config or {}) | tojson }};
+        const logoutRequested = {{ (logout_requested or false) | tojson }};
+        const adminEmailDomain = {{ (admin_email_domain or '') | tojson }};
+        const adminEmails = {{ (admin_emails or []) | tojson }};
+        const nextUrl = {{ (next_url or '') | tojson }};
+
+        const form = document.getElementById('firebase-login-form');
+        const emailInput = document.getElementById('email');
+        const passwordInput = document.getElementById('password');
+        const loginBtn = document.getElementById('login-btn');
+        const logoutBtn = document.getElementById('logout-btn');
+        const errorBox = document.getElementById('error-message');
+        const successBox = document.getElementById('success-message');
+        const hintBox = document.getElementById('login-hint');
+
+        function setError(msg) {
+            errorBox.textContent = msg;
+            errorBox.style.display = msg ? 'block' : 'none';
+        }
+        function setSuccess(msg) {
+            successBox.textContent = msg;
+            successBox.style.display = msg ? 'block' : 'none';
+        }
+        function setHint(msg) {
+            hintBox.textContent = msg;
+            hintBox.style.display = msg ? 'block' : 'none';
+        }
+        function setBusy(busy) {
+            loginBtn.disabled = busy;
+            loginBtn.textContent = busy ? 'A entrar…' : 'Entrar';
+        }
+
+        function isConfigReady(cfg) {
+            return cfg && cfg.apiKey && cfg.authDomain && cfg.projectId;
+        }
+
+        if (!isConfigReady(firebaseConfig)) {
+            setHint(
+                'Falta configurar o Firebase Web (FIREBASE_API_KEY, FIREBASE_AUTH_DOMAIN, FIREBASE_PROJECT_ID, FIREBASE_APP_ID). ' +
+                'Sem isso não dá para fazer login do admin.'
+            );
+            setError('Configuração Firebase Web em falta.');
+            form.addEventListener('submit', (e) => e.preventDefault());
+        } else {
+            const app = initializeApp(firebaseConfig);
+            const authClient = getAuth(app);
+
+            if (adminEmails.length) {
+                setHint('Acesso restrito a emails específicos (ADMIN_EMAILS).');
+            } else if (adminEmailDomain) {
+                setHint(`Acesso restrito ao domínio: @${adminEmailDomain}`);
+            } else {
+                setHint('Acesso permitido a qualquer conta Firebase autenticada.');
+            }
+
+            async function createServerSession(user) {
+                const idToken = await user.getIdToken(true);
+                const resp = await fetch('/api/admin/login/firebase', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ idToken })
+                });
+                const data = await resp.json().catch(() => ({}));
+                if (!resp.ok) {
+                    throw new Error(data.error || 'Erro ao criar sessão admin');
+                }
+                return data;
+            }
+
+            onAuthStateChanged(authClient, async (user) => {
+                if (logoutRequested && user) {
+                    await signOut(authClient);
+                    return;
+                }
+
+                if (user) {
+                    logoutBtn.style.display = 'inline-flex';
+                    try {
+                        await createServerSession(user);
+                        window.location.href = (nextUrl && nextUrl.startsWith('/')) ? nextUrl : '/admin_rocha/dashboard';
+                    } catch (e) {
+                        setError(e.message);
+                    }
+                }
+            });
+
+            form.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                setError('');
+                setSuccess('');
+                setBusy(true);
+
+                try {
+                    const email = emailInput.value.trim();
+                    const password = passwordInput.value;
+
+                    const cred = await signInWithEmailAndPassword(authClient, email, password);
+                    await createServerSession(cred.user);
+                    setSuccess('Login efetuado com sucesso. A redirecionar…');
+                    window.location.href = (nextUrl && nextUrl.startsWith('/')) ? nextUrl : '/admin_rocha/dashboard';
+                } catch (err) {
+                    setError(err?.message || 'Falha no login');
+                } finally {
+                    setBusy(false);
+                }
+            });
+
+            logoutBtn.addEventListener('click', async () => {
+                try {
+                    await signOut(authClient);
+                    window.location.href = '/admin_rocha?logout=1';
+                } catch (e) {
+                    setError(e?.message || 'Erro ao terminar sessão');
+                }
+            });
+        }
+    </script>
 </body>
 </html>
