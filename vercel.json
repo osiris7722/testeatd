@@ -1,15 +1,5 @@
 {
   "version": 2,
-  "builds": [
-    {
-      "src": "api/index.py",
-      "use": "@vercel/python"
-    }
-  ],
-  "routes": [
-    {
-      "src": "/(.*)",
-      "dest": "api/index.py"
-    }
-  ]
+  "buildCommand": "cd 'teste em react/testeatdreact' && npm install && npm run build",
+  "outputDirectory": "teste em react/testeatdreact/build"
 }

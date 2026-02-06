@@ -18,17 +18,13 @@ const firebaseConfig = {
 export const firebaseApp = initializeApp(firebaseConfig);
 export const auth = getAuth(firebaseApp);
 
-const forceLongPolling = String(process.env.REACT_APP_FIRESTORE_FORCE_LONG_POLLING || '').trim() === '1';
+// Force long-polling to fix "pending requests" issue on some networks/hosting
 export const db = initializeFirestore(
   firebaseApp,
-  forceLongPolling
-    ? {
-        experimentalForceLongPolling: true,
-        useFetchStreams: false
-      }
-    : {
-        experimentalAutoDetectLongPolling: true
-      }
+  {
+    experimentalForceLongPolling: true,
+    useFetchStreams: false
+  }
 );
 
 // Offline persistence (best-effort)

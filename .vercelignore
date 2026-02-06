@@ -1,0 +1,13 @@
+node_modules
+*.pyc
+__pycache__
+.git
+.venv
+api
+app.py
+requirements.txt
+.python-version
+static
+templates
+README.md
+firebase-adminsdk*.json
