@@ -1,5 +1,5 @@
 {
   "version": 2,
-  "buildCommand": "cd 'teste em react/testeatdreact' && npm install && npm run build",
-  "outputDirectory": "teste em react/testeatdreact/build"
+  "buildCommand": "cd testefinal && npm install && npm run build",
+  "outputDirectory": "testefinal/build"
 }
