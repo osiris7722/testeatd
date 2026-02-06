@@ -1,6 +1,7 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import '../styles/kiosk.css';
 import { getPublicSummary, submitFeedback } from '../services/feedbackService';
+import { firebaseProjectId, firestorePersistence, firebaseConfigSource } from '../firebase';
 
 const QUEUE_KEY = 'feedback_queue_v1';
 const THEME_KEY = 'kiosk_theme';
@@ -57,27 +58,35 @@ export default function KioskPage() {
 
   const messageTimer = useRef(null);
 
+  const debugEnabled = useMemo(() => {
+    try {
+      return new URLSearchParams(window.location.search).get('debug') === '1';
+    } catch {
+      return false;
+    }
+  }, []);
+
   const statusText = useMemo(() => {
     if (isOnline) return queueCount > 0 ? `Online • ${queueCount} pendentes` : 'Online';
     return queueCount > 0 ? `Offline • ${queueCount} em fila` : 'Offline';
   }, [isOnline, queueCount]);
 
-  function setTimedMessage(kind, text, ms = 2500) {
+  const setTimedMessage = useCallback((kind, text, ms = 2500) => {
     setMessage({ kind, text });
     if (messageTimer.current) clearTimeout(messageTimer.current);
     messageTimer.current = setTimeout(() => setMessage({ kind: null, text: '' }), ms);
-  }
+  }, []);
 
-  async function refreshSummary() {
+  const refreshSummary = useCallback(async () => {
     try {
       const s = await getPublicSummary();
       setSummary(s);
     } catch {
       // Não bloquear UI; apenas manter o último snapshot.
     }
-  }
+  }, []);
 
-  async function flushQueue() {
+  const flushQueue = useCallback(async () => {
     const q = loadQueue();
     if (q.length === 0) return;
 
@@ -107,7 +116,7 @@ export default function KioskPage() {
       saveQueue(remaining);
       setQueueCount(remaining.length);
     }
-  }
+  }, [setTimedMessage]);
 
   async function handleSubmit(grau) {
     if (submitting) return;
@@ -218,7 +227,7 @@ export default function KioskPage() {
     refreshSummary();
     const t = setInterval(refreshSummary, 15000);
     return () => clearInterval(t);
-  }, []);
+  }, [refreshSummary]);
 
   useEffect(() => {
     // quando volta online, tenta reenviar fila
@@ -226,7 +235,7 @@ export default function KioskPage() {
       flushQueue();
       refreshSummary();
     }
-  }, [isOnline]);
+  }, [isOnline, flushQueue, refreshSummary]);
 
   useEffect(() => {
     setQueueCount(loadQueue().length);
@@ -254,6 +263,21 @@ export default function KioskPage() {
           <div className="status-row">
             <div className={`status-pill ${isOnline ? 'online' : 'offline'}`}>{statusText}</div>
           </div>
+
+          {debugEnabled ? (
+            <div style={{ marginTop: 10, padding: 10, border: '1px dashed var(--border)', borderRadius: 10, opacity: 0.95 }}>
+              <div style={{ fontWeight: 900, marginBottom: 6 }}>Debug</div>
+              <div style={{ fontFamily: 'monospace', fontSize: 12, lineHeight: 1.4 }}>
+                <div>host: {typeof window !== 'undefined' ? window.location.host : '—'}</div>
+                <div>firebaseProjectId: {firebaseProjectId || '—'}</div>
+                <div>config: {firebaseConfigSource.usingEnv ? 'env' : 'fallback'}</div>
+                <div>
+                  persistence: {firestorePersistence.enabled ? 'on' : 'off'}
+                  {firestorePersistence.error ? ` (${firestorePersistence.error})` : ''}
+                </div>
+              </div>
+            </div>
+          ) : null}
 
           <div className="buttons-container">
             <button
