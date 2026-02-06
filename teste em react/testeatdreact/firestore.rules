@@ -1,0 +1,79 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Opção recomendada (produção): definir custom claim `isAdmin = true`
+    // e usar isso nas rules.
+    function isAdmin() {
+      return isSignedIn() && request.auth.token.isAdmin == true;
+    }
+
+    function isValidGrau(g) {
+      return g in ['muito_satisfeito', 'satisfeito', 'insatisfeito'];
+    }
+
+    function isValidDateStr(s) {
+      return s is string && s.matches('^\\d{4}-\\d{2}-\\d{2}$');
+    }
+
+    function isValidTimeStr(s) {
+      return s is string && s.matches('^\\d{2}:\\d{2}:\\d{2}$');
+    }
+
+    function isValidDiaSemana(s) {
+      return s is string && s in ['Segunda-feira','Terça-feira','Quarta-feira','Quinta-feira','Sexta-feira','Sábado','Domingo'];
+    }
+
+    function isValidFeedback() {
+      // Validação mínima para reduzir abuso
+      return request.resource.data.keys().hasOnly([
+        'id',
+        'grau_satisfacao',
+        'data',
+        'hora',
+        'dia_semana',
+        'timestamp',
+        'clientTimestamp'
+      ])
+      && request.resource.data.id is number
+      && request.resource.data.id > 0
+      && isValidGrau(request.resource.data.grau_satisfacao)
+      && isValidDateStr(request.resource.data.data)
+      && isValidTimeStr(request.resource.data.hora)
+      && isValidDiaSemana(request.resource.data.dia_semana)
+      && request.resource.data.timestamp is timestamp
+      && request.resource.data.clientTimestamp is string;
+    }
+
+    // =============================================================
+    // Coleção principal
+    // =============================================================
+    match /feedback/{docId} {
+      // QUIOSQUE (público): permitir criar feedback
+      allow create: if isValidFeedback();
+
+      // IMPORTANTE:
+      // O quiosque mostra um resumo público (contagens) e o dashboard/TV lê dados.
+      // Para manter essa feature sem backend/Cloud Function, tens 2 opções:
+      //
+      // A) (Mais simples / menos privado) manter leitura pública:
+      allow read: if true;
+      //
+      // B) (Mais privado) só admins podem ler:
+      // allow read: if isAdmin();
+      //    Nota: com esta opção o resumo público no quiosque vai aparecer como “—”.
+
+      // Admin pode gerir
+      allow update, delete: if isAdmin();
+    }
+
+    // Por defeito: negar tudo o resto
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
